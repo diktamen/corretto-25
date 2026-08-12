@@ -818,13 +818,14 @@ static HMONITOR GetPrimaryMonitor()
 }
 
 /**
- * Note: the returned structure is shared, unlike the per-device one. All
- * callers only read from it. It is refilled on every call so that racing
- * callers write identical contents.
+ * Note: the returned structure is per thread, not per device. It is refilled
+ * on every call so that the caller sees the current primary display, and
+ * thread local so that a caller cannot observe it while another thread is
+ * refilling it.
  */
 static LPMONITORINFO GetDefaultMonitorInfo()
 {
-    static MONITORINFOEX mieInfo;
+    static thread_local MONITORINFOEX mieInfo;
 
     memset((void*)(&mieInfo), 0, sizeof(MONITORINFOEX));
     mieInfo.cbSize = sizeof(MONITORINFOEX);
