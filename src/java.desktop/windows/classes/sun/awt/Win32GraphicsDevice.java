@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -569,7 +569,11 @@ public class Win32GraphicsDevice extends GraphicsDevice implements
      */
     public ColorModel getDynamicColorModel() {
         if (dynamicColorModel == null) {
-            dynamicColorModel = makeColorModel(screen, true);
+            ColorModel cm = makeColorModel(screen, true);
+            if (cm == null) {
+                return defaultColorModel();
+            }
+            dynamicColorModel = cm;
         }
         return dynamicColorModel;
     }
@@ -579,9 +583,28 @@ public class Win32GraphicsDevice extends GraphicsDevice implements
      */
     public ColorModel getColorModel() {
         if (colorModel == null)  {
-            colorModel = makeColorModel(screen, false);
+            ColorModel cm = makeColorModel(screen, false);
+            if (cm == null) {
+                return defaultColorModel();
+            }
+            colorModel = cm;
         }
         return colorModel;
+    }
+
+    /**
+     * Fallback for when the native device is gone and no color model can be
+     * queried from it, which happens while all displays are detached, during
+     * a session change, or if this device has been invalidated by a display
+     * change. Returning the default RGB model keeps callers working with
+     * possibly inaccurate colors instead of failing on a null color model;
+     * a device with no display cannot show the difference anyway.
+     *
+     * The result is deliberately not cached, so that the real color model is
+     * picked up once the device is usable again.
+     */
+    private static ColorModel defaultColorModel() {
+        return ColorModel.getRGBdefault();
     }
 
     /**
