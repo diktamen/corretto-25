@@ -1,0 +1,211 @@
+#
+# In-house addition: combine the macOS x64 and aarch64 builds into universal
+# (fat) artifacts. This builds no JDK -- it consumes the two bundles that
+# build-macos.yml already produced -- so it costs minutes, not a third build.
+#
+# Two artifacts come out of it:
+#
+#   bundles-macos-universal          the full JDK image, lipo'd.
+#                                    Its jmods are aarch64-only (they cannot be
+#                                    merged; see make-macos-universal.sh), so do
+#                                    NOT jlink from this image expecting a
+#                                    universal result.
+#
+#   bundles-macos-universal-runtime  a jlink runtime that IS universal on both
+#                                    slices. This is the one to ship, and the
+#                                    one create_mac_installer.sh should consume
+#                                    via jpackage --runtime-image.
+#
+# The runtime is produced by jlinking once per architecture and merging the two
+# outputs. jlink is cross-capable: the aarch64 jlink reads the x64 jmods and
+# emits an x64 runtime without executing anything from it, so both runs happen
+# natively on one arm64 runner. jlink output carries no jmods and no CDS
+# archive, so it merges cleanly.
+#
+
+name: 'Build (macos universal)'
+
+on:
+  workflow_call:
+    inputs:
+      debug-suffix:
+        description: 'Which pair of bundles to merge: empty for release, -debug for fastdebug'
+        required: false
+        type: string
+      dry-run:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos-universal:
+    name: build
+    # Must be macOS: lipo, and the checks below run the merged binaries.
+    runs-on: macos-15
+    if: ${{ inputs.dry-run == false }}
+
+    steps:
+      - name: 'Checkout the scripts'
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            .github
+
+      - name: 'Get the x64 bundle'
+        uses: actions/download-artifact@v6
+        with:
+          name: bundles-macos-x64${{ inputs.debug-suffix }}
+          path: bundles-x64
+
+      - name: 'Get the aarch64 bundle'
+        uses: actions/download-artifact@v6
+        with:
+          name: bundles-macos-aarch64${{ inputs.debug-suffix }}
+          path: bundles-aarch64
+
+      - name: 'Extract both JDKs'
+        id: extract
+        run: |
+          set -euo pipefail
+          for arch in x64 aarch64; do
+            mkdir -p "extracted-$arch"
+            tar -xzf "bundles-$arch/jdk-macos-$arch${{ inputs.debug-suffix }}.tar.gz" -C "extracted-$arch"
+          done
+
+          # The macOS bundle unpacks as jdk-<version>.jdk/Contents/Home
+          x64_home="$(find extracted-x64 -maxdepth 3 -type d -name Home | head -1)"
+          arm_home="$(find extracted-aarch64 -maxdepth 3 -type d -name Home | head -1)"
+          bundle_dir="$(cd extracted-aarch64 && ls -d *.jdk | head -1)"
+          if [[ -z "$x64_home" || -z "$arm_home" || -z "$bundle_dir" ]]; then
+            echo "ERROR: unexpected bundle layout" >&2
+            find extracted-x64 extracted-aarch64 -maxdepth 3 -type d >&2
+            exit 1
+          fi
+          echo "x64-home=$PWD/$x64_home"     >> $GITHUB_OUTPUT
+          echo "arm-home=$PWD/$arm_home"     >> $GITHUB_OUTPUT
+          echo "bundle-dir=$bundle_dir"      >> $GITHUB_OUTPUT
+          chmod +x .github/scripts/make-macos-universal.sh
+
+      ###
+      ### 1. the universal JDK image
+      ###
+
+      - name: 'Merge the JDK image'
+        run: |
+          set -euo pipefail
+          bundle="${{ steps.extract.outputs.bundle-dir }}"
+          # Contents/ also holds Info.plist and MacOS/libjli.dylib beside Home.
+          mkdir -p "universal/$bundle/Contents"
+          cp -R "extracted-aarch64/$bundle/Contents/." "universal/$bundle/Contents/"
+          # A copied _CodeSignature would not match the rewritten binaries.
+          rm -rf "universal/$bundle/Contents/_CodeSignature"
+          rm -rf "universal/$bundle/Contents/Home"
+
+          .github/scripts/make-macos-universal.sh \
+            "${{ steps.extract.outputs.x64-home }}" \
+            "${{ steps.extract.outputs.arm-home }}" \
+            "$PWD/universal/$bundle/Contents/Home"
+
+          # The launcher stub outside Home needs merging too, or the .jdk bundle
+          # itself stays single-architecture.
+          stub="Contents/MacOS/libjli.dylib"
+          if [[ -f "extracted-x64/$bundle/$stub" && -f "extracted-aarch64/$bundle/$stub" ]]; then
+            lipo -create "extracted-x64/$bundle/$stub" "extracted-aarch64/$bundle/$stub" \
+                 -output "universal/$bundle/$stub"
+            echo "merged $stub"
+          fi
+
+      ###
+      ### 2. the universal jlink runtime
+      ###
+
+      - name: 'jlink one runtime per architecture, then merge'
+        run: |
+          set -euo pipefail
+          jlink="${{ steps.extract.outputs.arm-home }}/bin/jlink"
+
+          # Cross-jlink: same jlink binary, each architecture's jmods.
+          "$jlink" --module-path "${{ steps.extract.outputs.x64-home }}/jmods" \
+                   --add-modules ALL-MODULE-PATH --output rt-x64
+          "$jlink" --module-path "${{ steps.extract.outputs.arm-home }}/jmods" \
+                   --add-modules ALL-MODULE-PATH --output rt-aarch64
+
+          .github/scripts/make-macos-universal.sh \
+            "$PWD/rt-x64" "$PWD/rt-aarch64" "$PWD/rt-universal"
+
+      ###
+      ### 3. verification
+      ###
+
+      - name: 'Verify both artifacts are genuinely universal'
+        run: |
+          set -euo pipefail
+          fail=0
+          bundle="${{ steps.extract.outputs.bundle-dir }}"
+
+          check_image() {
+            local label="$1" home="$2"
+            echo "=================== $label ==================="
+
+            # Nothing under the image may be left single-architecture.
+            local thin=0
+            while IFS= read -r f; do
+              if file -b "$f" | grep -q 'Mach-O' && ! file -b "$f" | grep -q 'universal'; then
+                echo "still thin: ${f#"$home"/}"
+                thin=$((thin + 1))
+              fi
+            done < <(find "$home" -type f)
+            echo "single-architecture Mach-O files remaining: $thin"
+            [[ $thin -eq 0 ]] || fail=1
+
+            lipo -info "$home/bin/java"
+            # Runs natively on this arm64 runner.
+            "$home/bin/java" -version
+            # And the x86_64 slice, if Rosetta is present.
+            if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+              echo "--- x86_64 slice under Rosetta ---"
+              /usr/bin/arch -x86_64 "$home/bin/java" -version
+            else
+              echo "NOTE: no Rosetta on this runner; x86_64 slice verified by lipo only"
+            fi
+          }
+
+          check_image "universal JDK image" "universal/$bundle/Contents/Home"
+          check_image "universal jlink runtime" "rt-universal"
+
+          # The runtime is what ships, so make sure it actually executes code.
+          cat > Hello.java <<'EOF'
+          public class Hello {
+              public static void main(String[] a) {
+                  System.out.println("ok " + System.getProperty("os.arch")
+                      + " transform=" + System.getProperty("diktamen.archive.transform"));
+              }
+          }
+          EOF
+          "${{ steps.extract.outputs.arm-home }}/bin/javac" -d . Hello.java
+          ./rt-universal/bin/java -cp . Hello
+          if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            /usr/bin/arch -x86_64 ./rt-universal/bin/java -cp . Hello
+          fi
+
+          exit $fail
+
+      - name: 'Repackage'
+        run: |
+          set -euo pipefail
+          mkdir -p bundles
+          tar -czf "bundles/jdk-macos-universal${{ inputs.debug-suffix }}.tar.gz" \
+            -C universal "${{ steps.extract.outputs.bundle-dir }}"
+          tar -czf "bundles/runtime-macos-universal${{ inputs.debug-suffix }}.tar.gz" \
+            -C . rt-universal
+          ls -lh bundles
+
+      - name: 'Upload the universal bundles'
+        uses: actions/upload-artifact@v6
+        with:
+          name: bundles-macos-universal${{ inputs.debug-suffix }}
+          path: bundles
+          retention-days: 5

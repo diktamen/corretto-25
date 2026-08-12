@@ -353,6 +353,19 @@ jobs:
       dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
     if: needs.prepare.outputs.macos-aarch64 == 'true'
 
+  # In-house addition: lipo the two macOS bundles into one universal image.
+  # Merges artifacts rather than building, so it adds minutes, not a third build.
+  build-macos-universal:
+    name: macos-universal
+    needs:
+      - prepare
+      - build-macos-x64
+      - build-macos-aarch64
+    uses: ./.github/workflows/build-macos-universal.yml
+    with:
+      dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
+    if: needs.prepare.outputs.macos-x64 == 'true' && needs.prepare.outputs.macos-aarch64 == 'true'
+
   build-windows-x64:
     name: windows-x64
     needs: prepare
