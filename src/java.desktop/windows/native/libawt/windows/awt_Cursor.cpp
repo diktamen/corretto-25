@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -474,7 +474,7 @@ Java_sun_awt_windows_WGlobalCursorManager_getCursorPos(JNIEnv *env,
     HMONITOR monitor = MonitorFromPoint(p, MONITOR_DEFAULTTOPRIMARY);
     int screen = AwtWin32GraphicsDevice::GetScreenFromHMONITOR(monitor);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice *device = devices.Device(screen);
     int x = (device == NULL) ? p.x : device->ScaleDownAbsX(p.x);
     int y = (device == NULL) ? p.y : device->ScaleDownAbsY(p.y);
     env->SetIntField(point, AwtCursor::pointXID, x);

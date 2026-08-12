@@ -785,13 +785,15 @@ jobject AwtWin32GraphicsDevice::GetColorModel(JNIEnv *env, jboolean dynamic,
                                               int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetColorModel(env, dynamic);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? NULL : device->GetColorModel(env, dynamic);
 }
 
 LPMONITORINFO AwtWin32GraphicsDevice::GetMonitorInfo(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetMonitorInfo();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? NULL : device->GetMonitorInfo();
 }
 
 /**
@@ -802,16 +804,16 @@ void AwtWin32GraphicsDevice::ResetAllMonitorInfo()
 {
     //IE in some circumstances generates WM_SETTINGCHANGE message on appearance
     //and thus triggers this method
-    //but we may not have the devices list initialized yet.
-    if (!Devices::GetInstance()){
-        return;
-    }
+    //but we may not have the devices list initialized yet, in which case
+    //NumDevices() is 0 and there is nothing to reset.
     Devices::InstanceAccess devices;
-    int devicesNum = devices->GetNumDevices();
+    int devicesNum = devices.NumDevices();
     for (int deviceIndex = 0; deviceIndex < devicesNum; deviceIndex++) {
-        HMONITOR monitor = devices->GetDevice(deviceIndex)->GetMonitor();
-        ::GetMonitorInfo(monitor,
-                         devices->GetDevice(deviceIndex)->pMonitorInfo);
+        AwtWin32GraphicsDevice *device = devices.Device(deviceIndex, FALSE);
+        if (device == NULL) {
+            continue;
+        }
+        ::GetMonitorInfo(device->GetMonitor(), device->pMonitorInfo);
     }
 }
 
@@ -820,56 +822,67 @@ void AwtWin32GraphicsDevice::ResetAllMonitorInfo()
  */
 void AwtWin32GraphicsDevice::ResetAllDesktopScales()
 {
-    if (!Devices::GetInstance()){
-        return;
-    }
     Devices::InstanceAccess devices;
-    int devicesNum = devices->GetNumDevices();
+    int devicesNum = devices.NumDevices();
     for (int deviceIndex = 0; deviceIndex < devicesNum; deviceIndex++) {
-        devices->GetDevice(deviceIndex)->InitDesktopScales();
+        AwtWin32GraphicsDevice *device = devices.Device(deviceIndex, FALSE);
+        if (device != NULL) {
+            device->InitDesktopScales();
+        }
     }
 }
 
 HMONITOR AwtWin32GraphicsDevice::GetMonitor(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetMonitor();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? (HMONITOR)NULL : device->GetMonitor();
 }
 
 HPALETTE AwtWin32GraphicsDevice::GetPalette(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetPalette();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? (HPALETTE)NULL : device->GetPalette();
 }
 
 void AwtWin32GraphicsDevice::UpdateDynamicColorModel(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    devices->GetDevice(deviceIndex)->UpdateDynamicColorModel();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    if (device != NULL) {
+        device->UpdateDynamicColorModel();
+    }
 }
 
 BOOL AwtWin32GraphicsDevice::UpdateSystemPalette(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->UpdateSystemPalette();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? FALSE : device->UpdateSystemPalette();
 }
 
 HPALETTE AwtWin32GraphicsDevice::SelectPalette(HDC hDC, int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->SelectPalette(hDC);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? (HPALETTE)NULL : device->SelectPalette(hDC);
 }
 
 void AwtWin32GraphicsDevice::RealizePalette(HDC hDC, int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    devices->GetDevice(deviceIndex)->RealizePalette(hDC);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    if (device != NULL) {
+        device->RealizePalette(hDC);
+    }
 }
 
 ColorData *AwtWin32GraphicsDevice::GetColorData(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetColorData();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? NULL : device->GetColorData();
 }
 
 /**
@@ -878,15 +891,17 @@ ColorData *AwtWin32GraphicsDevice::GetColorData(int deviceIndex)
 int AwtWin32GraphicsDevice::GetGrayness(int deviceIndex)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(deviceIndex)->GetGrayness();
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
+    return device == NULL ? GS_NOTGRAY : device->GetGrayness();
 }
 
 HDC AwtWin32GraphicsDevice::GetDCFromScreen(int screen) {
     J2dTraceLn1(J2D_TRACE_INFO,
                 "AwtWin32GraphicsDevice::GetDCFromScreen screen=%d", screen);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *dev = devices->GetDevice(screen);
-    return MakeDCFromMonitor(dev->GetMonitor());
+    AwtWin32GraphicsDevice *dev = devices.Device(screen);
+    // MakeDCFromMonitor() returns a NULL HDC for a NULL monitor
+    return dev == NULL ? (HDC)NULL : MakeDCFromMonitor(dev->GetMonitor());
 }
 
 /** Compare elements of MONITORINFOEX structures for the given HMONITORs.
@@ -929,13 +944,21 @@ int AwtWin32GraphicsDevice::GetScreenFromHMONITOR(HMONITOR mon) {
 
     DASSERT(mon != NULL);
     JNIEnv *env = (JNIEnv*) JNU_GetEnv(jvm, JNI_VERSION_1_2);
-    if (!Devices::GetInstance()) {
-       Devices::UpdateInstance(env);
+    Devices *instance = Devices::GetInstance();
+    if (instance == NULL) {
+        Devices::UpdateInstance(env);
+    } else {
+        // GetInstance() added a reference on our behalf
+        instance->Release();
     }
     Devices::InstanceAccess devices;
 
-    for (int i = 0; i < devices->GetNumDevices(); i++) {
-        HMONITOR mhnd = devices->GetDevice(i)->GetMonitor();
+    for (int i = 0; i < devices.NumDevices(); i++) {
+        AwtWin32GraphicsDevice *device = devices.Device(i, FALSE);
+        if (device == NULL) {
+            continue;
+        }
+        HMONITOR mhnd = device->GetMonitor();
         if (AreSameMonitors(mon, mhnd)) {
             J2dTraceLn1(J2D_TRACE_VERBOSE, "  Found device: %d", i);
             return i;
@@ -1059,7 +1082,9 @@ JNIEXPORT jboolean JNICALL Java_sun_awt_Win32GraphicsDevice_isPixFmtSupported
         return true;
     }
 
-    PIXELFORMATDESCRIPTOR pfd;
+    // DescribePixelFormat() leaves pfd untouched on failure, which includes
+    // the case of a NULL hDC when the device is gone.
+    PIXELFORMATDESCRIPTOR pfd = {};
     int max = ::DescribePixelFormat(hDC, (int)pixFmtID,
         sizeof(PIXELFORMATDESCRIPTOR), &pfd);
     DASSERT(max);
@@ -1249,8 +1274,12 @@ GetAttachedDisplayDevice(int screen, DISPLAY_DEVICE *lpDisplayDevice)
     {
         if (lpDisplayDevice->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) {
             Devices::InstanceAccess devices;
+            AwtWin32GraphicsDevice *device = devices.Device(screen);
+            if (device == NULL) {
+                return FALSE;
+            }
             MONITORINFOEX *pMonInfo =
-                (LPMONITORINFOEX)devices->GetDevice(screen)->GetMonitorInfo();
+                (LPMONITORINFOEX)device->GetMonitorInfo();
             // make sure the device names match
             if (wcscmp(pMonInfo->szDevice, lpDisplayDevice->DeviceName) == 0) {
                 return TRUE;
@@ -1424,7 +1453,8 @@ JNIEXPORT jobject JNICALL
     (JNIEnv *env, jobject thisPtr, jint screen, jboolean dynamic)
 {
     Devices::InstanceAccess devices;
-    return devices->GetDevice(screen)->GetColorModel(env, dynamic);
+    AwtWin32GraphicsDevice *device = devices.Device(screen);
+    return device == NULL ? NULL : device->GetColorModel(env, dynamic);
 }
 
 /*

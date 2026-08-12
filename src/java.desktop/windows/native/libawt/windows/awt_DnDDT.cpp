@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -130,7 +130,7 @@ ULONG AwtDropTarget::Release() {
 static void ScaleDown(POINT &cp, HWND m_window) {
     int screen = AwtWin32GraphicsDevice::DeviceIndexForWindow(m_window);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     if (device) {
         cp.x = device->ScaleDownX(cp.x);
         cp.y = device->ScaleDownY(cp.y);

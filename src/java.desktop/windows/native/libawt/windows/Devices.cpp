@@ -50,8 +50,15 @@
  *     // subclass (this automatically increases ref count of this instance)
  *     Devices::InstanceAccess devices; // increases the ref count of current instance
  *     // Then the object can be used, for example, to retrieve the awt device.
- *     // (note: ref count is not increased with GetDevice())
- *     AwtWin32GraphicsDevice *dev = devices->GetDevice(idx);
+ *     // (note: ref count is not increased with Device())
+ *     // Use the InstanceAccess accessors (Device(), DeviceReference(),
+ *     // NumDevices()) rather than operator->: there may be no Devices
+ *     // instance at all, and the array may be empty, in which case
+ *     // Device() returns NULL.
+ *     AwtWin32GraphicsDevice *dev = devices.Device(idx);
+ *     if (dev == NULL) {
+ *         return defaultData;
+ *     }
  *     dev->DoStuff();
  *     Data data = dev->GetData();
  *     return data;
@@ -64,7 +71,7 @@
  *   {
  *     Devices::InstanceAccess devices; // increases the ref count
  *     // next call increases the ref count of the instance again
- *     AwtWin32GraphicsDevice *dev = devices->GetDeviceReference(idx);
+ *     AwtWin32GraphicsDevice *dev = devices.DeviceReference(idx);
  *     wsdo->device = dev;
  *     // we saved the ref to the device element, the first reference
  *     // will be released automatically in the InstanceAccess destructor
@@ -243,16 +250,10 @@ BOOL Devices::UpdateInstance(JNIEnv *env)
         return FALSE;
     }
 
-    if (numScreens == 0) {
-        CriticalSection::Lock l(arrayLock);
-        if (theInstance != NULL) {
-            J2dRlsTraceLn(J2D_TRACE_ERROR,
-                          "Devices::UpdateInstance: No valid monitor handles.");
-            free(monHds);
-            return FALSE;
-        }
-    }
-
+    // Note: an empty enumeration must not replace an existing array, but that
+    // is checked under arrayLock below, together with the installation of the
+    // new array. Checking it here would leave a window in which a concurrent
+    // update installs a good array that we then overwrite with an empty one.
     Devices *newDevices = new Devices(numScreens);
     // This way we know that the array will not be disposed of
     // at least until we replaced it with a new one.
@@ -272,6 +273,16 @@ BOOL Devices::UpdateInstance(JNIEnv *env)
     }
     {
         CriticalSection::Lock l(arrayLock);
+
+        // A transient empty enumeration (seen when the session is being
+        // disconnected, for example) must not invalidate a working array.
+        if (numScreens == 0 && theInstance != NULL) {
+            J2dRlsTraceLn(J2D_TRACE_ERROR,
+                          "Devices::UpdateInstance: No valid monitor handles.");
+            newDevices->Release();
+            free(monHds);
+            return FALSE;
+        }
 
         // install the new devices array
         Devices *oldDevices = theInstance;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -1178,7 +1178,7 @@ static void ScaleDownAbs(POINT &pt) {
     HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
     int screen = AwtWin32GraphicsDevice::GetScreenFromHMONITOR(monitor);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice *device = devices.Device(screen);
     if (device) {
         pt.x = device->ScaleDownAbsX(pt.x);
         pt.y = device->ScaleDownAbsY(pt.y);

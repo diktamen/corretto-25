@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -629,7 +629,7 @@ void AwtWindow::Reshape(int x, int y, int w, int h) {
     Devices::InstanceAccess devices;
     HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     int screen = AwtWin32GraphicsDevice::GetScreenFromHMONITOR(monitor);
-    AwtWin32GraphicsDevice *device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice *device = devices.Device(screen);
     // Try to set the correct size and jump to the correct location, even if it is
     // on the different monitor. Note that for the "size" we use the current
     // monitor, so the WM_DPICHANGED will adjust it for the "target" monitor.
@@ -1294,7 +1294,7 @@ MsgRouting AwtWindow::WmEnterSizeMove()
     m_winSizeMove = TRUE;
     // Below is a workaround, see CheckWindowDPIChange
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(m_screenNum);
+    AwtWin32GraphicsDevice* device = devices.Device(m_screenNum);
     if (device) {
         prevScaleRec.screen = m_screenNum;
         prevScaleRec.scaleX = device->GetScaleX();
@@ -1575,8 +1575,8 @@ void AwtWindow::CheckIfOnNewScreen(BOOL force) {
         // update the m_screenNum only if the size was updated as well in the
         // WM_DPICHANGED.
         Devices::InstanceAccess devices;
-        AwtWin32GraphicsDevice* oldDevice = devices->GetDevice(m_screenNum);
-        AwtWin32GraphicsDevice* newDevice = devices->GetDevice(curScrn);
+        AwtWin32GraphicsDevice* oldDevice = devices.Device(m_screenNum);
+        AwtWin32GraphicsDevice* newDevice = devices.Device(curScrn);
         if (!force && m_winSizeMove && oldDevice && newDevice) {
             if (oldDevice->GetScaleX() != newDevice->GetScaleX()
                     || oldDevice->GetScaleY() != newDevice->GetScaleY()) {
@@ -1613,7 +1613,7 @@ void AwtWindow::CheckIfOnNewScreen(BOOL force) {
 void AwtWindow::CheckWindowDPIChange() {
     if (prevScaleRec.screen != -1 && prevScaleRec.screen != m_screenNum) {
         Devices::InstanceAccess devices;
-        AwtWin32GraphicsDevice *device = devices->GetDevice(m_screenNum);
+        AwtWin32GraphicsDevice *device = devices.Device(m_screenNum);
         if (device) {
             if (prevScaleRec.scaleX != device->GetScaleX()
                     || prevScaleRec.scaleY != device->GetScaleY()) {
