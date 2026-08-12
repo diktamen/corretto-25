@@ -116,6 +116,9 @@ jobs:
           ${{ matrix.flags }}
           --with-version-pre=${{ steps.build-meta.outputs.timestamp }}
           --with-version-opt=${{ steps.build-meta.outputs.hash }}
+          --with-vendor-name=Diktamen
+          --with-vendor-url=https://diktamen.com/
+          --with-vendor-version-string=Diktamen-${{ steps.build-meta.outputs.version }}
           --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
           --with-jtreg=${{ steps.jtreg.outputs.path }}
           --with-gtest=${{ steps.gtest.outputs.path }}
