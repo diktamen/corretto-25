@@ -135,12 +135,20 @@ jobs:
             ${{ inputs.apt-extra-packages }}
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ inputs.gcc-major-version }} 100 --slave /usr/bin/g++ g++ /usr/bin/g++-${{ inputs.gcc-major-version }}
 
+      - name: 'Get build metadata'
+        id: build-meta
+        run: |
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "version=$(cat version.txt | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: 'Configure'
         run: >
           bash configure
           --with-conf-name=${{ inputs.platform }}
           ${{ matrix.debug-level == 'debug' && '--with-debug-level=fastdebug' || '' }}
-          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
+          --with-version-pre=${{ steps.build-meta.outputs.timestamp }}
+          --with-version-opt=${{ steps.build-meta.outputs.hash }}
           --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
           --with-jtreg=${{ steps.jtreg.outputs.path }}
           --with-gtest=${{ steps.gtest.outputs.path }}

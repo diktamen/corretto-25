@@ -102,12 +102,20 @@ jobs:
           # This will make GNU make available as 'make' and not only as 'gmake'
           echo '/usr/local/opt/make/libexec/gnubin' >> $GITHUB_PATH
 
+      - name: 'Get build metadata'
+        id: build-meta
+        run: |
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "version=$(cat version.txt | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+
       - name: 'Configure'
         run: >
           bash configure
           --with-conf-name=${{ inputs.platform }}
           ${{ matrix.flags }}
-          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
+          --with-version-pre=${{ steps.build-meta.outputs.timestamp }}
+          --with-version-opt=${{ steps.build-meta.outputs.hash }}
           --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
           --with-jtreg=${{ steps.jtreg.outputs.path }}
           --with-gtest=${{ steps.gtest.outputs.path }}

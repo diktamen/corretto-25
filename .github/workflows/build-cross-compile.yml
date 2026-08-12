@@ -169,11 +169,17 @@ jobs:
           sudo rm -rf sysroot/
         if: steps.create-sysroot.outcome != 'success' && steps.get-cached-sysroot.outputs.cache-hit != 'true'
 
+      - name: 'Get build metadata'
+        id: build-meta
+        run: |
+          echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "version=$(cat version.txt | tr -d '[:space:]')" >> $GITHUB_OUTPUT
+
       - name: 'Configure'
         run: >
           bash configure
           --with-conf-name=linux-${{ matrix.target-cpu }}
-          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
+          --with-version-opt=${{ steps.build-meta.outputs.hash }}
           --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
           --with-gtest=${{ steps.gtest.outputs.path }}
           --with-zlib=system
