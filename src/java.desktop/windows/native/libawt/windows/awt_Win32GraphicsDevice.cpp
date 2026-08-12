@@ -804,12 +804,10 @@ void AwtWin32GraphicsDevice::ResetAllMonitorInfo()
 {
     //IE in some circumstances generates WM_SETTINGCHANGE message on appearance
     //and thus triggers this method
-    //but we may not have the devices list initialized yet.
-    if (!Devices::GetInstance()){
-        return;
-    }
+    //but we may not have the devices list initialized yet, in which case
+    //NumDevices() is 0 and there is nothing to reset.
     Devices::InstanceAccess devices;
-    int devicesNum = devices->GetNumDevices();
+    int devicesNum = devices.NumDevices();
     for (int deviceIndex = 0; deviceIndex < devicesNum; deviceIndex++) {
         AwtWin32GraphicsDevice *device = devices.Device(deviceIndex, FALSE);
         if (device == NULL) {
@@ -824,11 +822,8 @@ void AwtWin32GraphicsDevice::ResetAllMonitorInfo()
  */
 void AwtWin32GraphicsDevice::ResetAllDesktopScales()
 {
-    if (!Devices::GetInstance()){
-        return;
-    }
     Devices::InstanceAccess devices;
-    int devicesNum = devices->GetNumDevices();
+    int devicesNum = devices.NumDevices();
     for (int deviceIndex = 0; deviceIndex < devicesNum; deviceIndex++) {
         AwtWin32GraphicsDevice *device = devices.Device(deviceIndex, FALSE);
         if (device != NULL) {
@@ -949,8 +944,12 @@ int AwtWin32GraphicsDevice::GetScreenFromHMONITOR(HMONITOR mon) {
 
     DASSERT(mon != NULL);
     JNIEnv *env = (JNIEnv*) JNU_GetEnv(jvm, JNI_VERSION_1_2);
-    if (!Devices::GetInstance()) {
-       Devices::UpdateInstance(env);
+    Devices *instance = Devices::GetInstance();
+    if (instance == NULL) {
+        Devices::UpdateInstance(env);
+    } else {
+        // GetInstance() added a reference on our behalf
+        instance->Release();
     }
     Devices::InstanceAccess devices;
 
