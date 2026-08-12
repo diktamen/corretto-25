@@ -535,6 +535,10 @@ const int ObjectAlignmentInBytes = 8;
   product(bool, CreateCoredumpOnCrash, true,                                \
           "Create core/mini dump on VM fatal error")                        \
                                                                             \
+  product(ccstr, CreateCoredumpFile, nullptr,                               \
+          "If a crash occurs, save the minidump to this file "              \
+          "[default: ./hs_err_pid%p.mdmp] (%p replaced with pid)")         \
+                                                                            \
   product(uint64_t, ErrorLogTimeout, 2 * 60,                                \
           "Timeout, in seconds, to limit the time spent on writing an "     \
           "error log in case of a crash.")                                  \

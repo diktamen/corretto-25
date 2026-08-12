@@ -165,6 +165,84 @@ void os::check_core_dump_prerequisites(char* buffer, size_t bufferSize, bool che
   }
 }
 
+// Expand $VAR, ${VAR} and a leading ~ (e.g. $HOME) so that paths from
+// jpackage .cfg files resolve on the end user's machine. Undefined and
+// out-of-range references leave dst undefined and return false, except
+// undefined variables, which expand to the empty string like in a shell.
+bool os::expand_environment_variables(const char* src, char* dst, size_t dstlen) {
+  size_t out = 0;
+  const char* p = src;
+  if (p[0] == '~' && (p[1] == '/' || p[1] == '\0')) {
+    const char* home = ::getenv("HOME");
+    if (home != nullptr) {
+      size_t hlen = strlen(home);
+      if (hlen >= dstlen) {
+        return false;
+      }
+      memcpy(dst, home, hlen);
+      out = hlen;
+      p++;
+    }
+  }
+  while (*p != '\0') {
+    if (*p == '$') {
+      const char* name_start;
+      const char* name_end;
+      const char* next;
+      if (p[1] == '{') {
+        name_start = p + 2;
+        name_end = strchr(name_start, '}');
+        if (name_end == nullptr) { // unterminated ${
+          return false;
+        }
+        next = name_end + 1;
+      } else {
+        name_start = p + 1;
+        name_end = name_start;
+        while ((*name_end >= 'a' && *name_end <= 'z') ||
+               (*name_end >= 'A' && *name_end <= 'Z') ||
+               (*name_end >= '0' && *name_end <= '9') ||
+               *name_end == '_') {
+          name_end++;
+        }
+        next = name_end;
+      }
+      if (name_end == name_start) {
+        // Lone '$' (or "${}"): keep the '$' as-is
+        if (out + 1 >= dstlen) {
+          return false;
+        }
+        dst[out++] = *p++;
+        continue;
+      }
+      char name[256];
+      size_t nlen = (size_t)(name_end - name_start);
+      if (nlen >= sizeof(name)) {
+        return false;
+      }
+      memcpy(name, name_start, nlen);
+      name[nlen] = '\0';
+      const char* val = ::getenv(name);
+      if (val != nullptr) {
+        size_t vlen = strlen(val);
+        if (out + vlen >= dstlen) {
+          return false;
+        }
+        memcpy(&dst[out], val, vlen);
+        out += vlen;
+      }
+      p = next;
+    } else {
+      if (out + 1 >= dstlen) {
+        return false;
+      }
+      dst[out++] = *p++;
+    }
+  }
+  dst[out] = '\0';
+  return true;
+}
+
 bool os::committed_in_range(address start, size_t size, address& committed_start, size_t& committed_size) {
 
 #ifdef _AIX

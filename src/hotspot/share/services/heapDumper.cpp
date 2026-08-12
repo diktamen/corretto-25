@@ -66,6 +66,11 @@
 #ifdef LINUX
 #include "os_linux.hpp"
 #endif
+#ifdef _WINDOWS
+// For ExpandEnvironmentStrings when resolving HeapDumpPath. JDK 21 got this
+// via precompiled.hpp, which no longer exists.
+#include <windows.h>
+#endif
 
 /*
  * HPROF binary format - description copied from:
@@ -2760,6 +2765,27 @@ void HeapDumper::dump_heap(bool oome) {
   if (dump_file_seq == 0) { // first time in, we initialize base_path
     // Set base path (name or directory, default or custom, without seq no), doing %p substitution.
     const char *path_src = (HeapDumpPath != nullptr && HeapDumpPath[0] != '\0') ? HeapDumpPath : dump_file_name;
+#if defined(_WINDOWS)
+    // Expand %ENVVAR% references (e.g. %LOCALAPPDATA%) so that paths from
+    // jpackage .cfg files resolve on the end user's machine. Only a
+    // user-supplied HeapDumpPath can contain them; leave the default alone so
+    // its lone '%' in "%p" is never considered as part of a variable name.
+    char expanded_heap_path[JVM_MAXPATHLEN];
+    if (path_src != dump_file_name) {
+      DWORD elen = ExpandEnvironmentStrings(path_src, expanded_heap_path, sizeof(expanded_heap_path));
+      if (elen > 0 && elen < sizeof(expanded_heap_path)) {
+        path_src = expanded_heap_path;
+      }
+    }
+#elif defined(__APPLE__)
+    // Expand $VAR, ${VAR} and a leading ~ (e.g. $HOME) so that paths from
+    // jpackage .cfg files resolve on the end user's machine.
+    char expanded_heap_path[JVM_MAXPATHLEN];
+    if (path_src != dump_file_name &&
+        os::expand_environment_variables(path_src, expanded_heap_path, sizeof(expanded_heap_path))) {
+      path_src = expanded_heap_path;
+    }
+#endif
     if (!Arguments::copy_expand_pid(path_src, strlen(path_src), base_path, JVM_MAXPATHLEN - max_digit_chars)) {
       warning("Cannot create heap dump file.  HeapDumpPath is too long.");
       return;

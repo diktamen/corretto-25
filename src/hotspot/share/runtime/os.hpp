@@ -714,6 +714,12 @@ class os: AllStatic {
   static const char*    get_temp_directory();
   static const char*    get_current_directory(char *buf, size_t buflen);
 
+  // Expands environment variable references in src into dst: $VAR, ${VAR}
+  // and a leading ~ on POSIX platforms. Returns false if dst is too small
+  // or src is malformed; dst is undefined in that case. POSIX only.
+  static bool           expand_environment_variables(const char* src,
+                                                     char* dst, size_t dstlen);
+
   static void           prepare_native_symbols();
 
   // Builds the platform-specific name of a library.
