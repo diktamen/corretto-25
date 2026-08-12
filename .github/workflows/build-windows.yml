@@ -61,6 +61,56 @@ on:
         required: false
         type: boolean
         default: false
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build (e.g., windows-x64, windows-aarch64)'
+        required: false
+        type: choice
+        options:
+          - windows-x64
+          - windows-aarch64
+        default: 'windows-x64'
+      runs-on:
+        description: 'Runner label to build on'
+        required: false
+        type: string
+        default: 'windows-2022'
+      extra-conf-options:
+        description: 'Additional configure options'
+        required: false
+        type: string
+      make-target:
+        description: 'Make target'
+        required: false
+        type: string
+        default: 'product-bundles test-bundles'
+      debug-levels:
+        description: 'Debug levels to build (JSON array format, e.g., [ "debug", "release" ] or [ "release" ])'
+        required: false
+        type: string
+        default: '[ "debug", "release" ]'
+      msvc-toolset-version:
+        description: 'MSVC toolset version'
+        required: false
+        type: string
+        default: '14.44'
+      msvc-toolset-architecture:
+        description: 'MSVC toolset architecture'
+        required: false
+        type: choice
+        options:
+          - x86.x64
+          - arm64
+        default: 'x86.x64'
+      configure-arguments:
+        description: 'Additional configure arguments'
+        required: false
+        type: string
+      make-arguments:
+        description: 'Additional make arguments'
+        required: false
+        type: string
 
 env:
   # These are needed to make the MSYS2 bash work properly
@@ -150,6 +200,7 @@ jobs:
           --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
           --with-jtreg=${{ steps.jtreg.outputs.path }}
           --with-gtest=${{ steps.gtest.outputs.path }}
+          --with-native-debug-symbols=external
           --with-msvc-toolset-version=${{ inputs.msvc-toolset-version }}
           --with-jmod-compress=zip-1
           ${{ inputs.extra-conf-options }} ${{ inputs.configure-arguments }} || (
