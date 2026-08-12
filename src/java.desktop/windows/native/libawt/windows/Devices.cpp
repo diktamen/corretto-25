@@ -50,8 +50,15 @@
  *     // subclass (this automatically increases ref count of this instance)
  *     Devices::InstanceAccess devices; // increases the ref count of current instance
  *     // Then the object can be used, for example, to retrieve the awt device.
- *     // (note: ref count is not increased with GetDevice())
- *     AwtWin32GraphicsDevice *dev = devices->GetDevice(idx);
+ *     // (note: ref count is not increased with Device())
+ *     // Use the InstanceAccess accessors (Device(), DeviceReference(),
+ *     // NumDevices()) rather than operator->: there may be no Devices
+ *     // instance at all, and the array may be empty, in which case
+ *     // Device() returns NULL.
+ *     AwtWin32GraphicsDevice *dev = devices.Device(idx);
+ *     if (dev == NULL) {
+ *         return defaultData;
+ *     }
  *     dev->DoStuff();
  *     Data data = dev->GetData();
  *     return data;
@@ -64,7 +71,7 @@
  *   {
  *     Devices::InstanceAccess devices; // increases the ref count
  *     // next call increases the ref count of the instance again
- *     AwtWin32GraphicsDevice *dev = devices->GetDeviceReference(idx);
+ *     AwtWin32GraphicsDevice *dev = devices.DeviceReference(idx);
  *     wsdo->device = dev;
  *     // we saved the ref to the device element, the first reference
  *     // will be released automatically in the InstanceAccess destructor

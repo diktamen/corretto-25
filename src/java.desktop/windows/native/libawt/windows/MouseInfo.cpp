@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -99,7 +99,7 @@ Java_sun_awt_windows_WMouseInfoPeer_fillPointWithCoords(JNIEnv *env, jclass cls,
     HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
     int screen = AwtWin32GraphicsDevice::GetScreenFromHMONITOR(monitor);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice *device = devices.Device(screen);
 
     xID = env->GetFieldID(pointClass, "x", "I");
     CHECK_NULL_RETURN(xID, (jint)0);

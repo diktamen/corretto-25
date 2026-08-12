@@ -161,7 +161,7 @@ Java_sun_awt_Win32GraphicsEnvironment_getNumScreens(JNIEnv *env,
                                                     jobject thisobj)
 {
     Devices::InstanceAccess devices;
-    return devices->GetNumDevices();
+    return devices.NumDevices();
 }
 
 /*

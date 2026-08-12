@@ -52,6 +52,14 @@ static BOOL                     UpdateInstance(JNIEnv *env);
            INLINE AwtWin32GraphicsDevice* Device(int index, BOOL adjust = TRUE) {
                return devices == NULL ? NULL : devices->GetDevice(index, adjust);
            }
+           INLINE int NumDevices() {
+               return devices == NULL ? 0 : devices->GetNumDevices();
+           }
+           INLINE AwtWin32GraphicsDevice* DeviceReference(int index,
+                                                          BOOL adjust = TRUE) {
+               return devices == NULL
+                   ? NULL : devices->GetDeviceReference(index, adjust);
+           }
         private:
            Devices* devices;
            // prevent bad things like copying or getting address of

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2020, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -634,14 +634,14 @@ Java_sun_awt_windows_WFileDialogPeer_toBack(JNIEnv *env, jobject peer)
 int ScaleDownAbsX(int x, HWND hwnd) {
     int screen = AwtWin32GraphicsDevice::DeviceIndexForWindow(hwnd);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? x : device->ScaleDownAbsX(x);
 }
 
 int ScaleDownAbsY(int y, HWND hwnd) {
     int screen = AwtWin32GraphicsDevice::DeviceIndexForWindow(hwnd);
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? y : device->ScaleDownAbsY(y);
 }
 

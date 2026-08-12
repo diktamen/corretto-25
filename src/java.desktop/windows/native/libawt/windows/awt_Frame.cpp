@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -659,7 +659,7 @@ void AwtFrame::Reshape(int x, int y, int w, int h)
         Devices::InstanceAccess devices;
         HMONITOR monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
         int screen = AwtWin32GraphicsDevice::GetScreenFromHMONITOR(monitor);
-        AwtWin32GraphicsDevice *device = devices->GetDevice(screen);
+        AwtWin32GraphicsDevice *device = devices.Device(screen);
         // Try to set the correct size and jump to the correct location, even if
         // it is on the different monitor. Note that for the "size" we use the
         // current monitor, so the WM_DPICHANGED will adjust it for the "target"
@@ -672,8 +672,10 @@ void AwtFrame::Reshape(int x, int y, int w, int h)
         // SetWindowPlacement takes workspace coordinates, but if taskbar is at
         // top/left of screen, workspace coords != screen coords, so offset by
         // workspace origin
-        x = x - (miInfo->rcWork.left - miInfo->rcMonitor.left);
-        y = y - (miInfo->rcWork.top - miInfo->rcMonitor.top);
+        if (miInfo != NULL) {
+            x = x - (miInfo->rcWork.left - miInfo->rcMonitor.left);
+            y = y - (miInfo->rcWork.top - miInfo->rcMonitor.top);
+        }
         WINDOWPLACEMENT wp;
         ::ZeroMemory(&wp, sizeof(WINDOWPLACEMENT));
         // set the window size for when it is not-iconified

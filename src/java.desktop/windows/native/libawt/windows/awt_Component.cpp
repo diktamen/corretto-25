@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2025, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -2220,7 +2220,7 @@ void AwtComponent::PaintUpdateRgn(const RECT *insets)
         // space
         int screen = GetScreenImOn();
         Devices::InstanceAccess devices;
-        AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+        AwtWin32GraphicsDevice* device = devices.Device(screen);
         float scaleX = (device == NULL) ? 1 : device->GetScaleX();
         float scaleY = (device == NULL) ? 1 : device->GetScaleY();
         for(i = 0; i < 2; i++) {
@@ -4756,56 +4756,56 @@ int AwtComponent::GetScreenImOn() {
 int AwtComponent::ScaleUpX(int x) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? x : device->ScaleUpX(x);
 }
 
 int AwtComponent::ScaleUpAbsX(int x) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? x : device->ScaleUpAbsX(x);
 }
 
 int AwtComponent::ScaleUpY(int y) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? y : device->ScaleUpY(y);
 }
 
 int AwtComponent::ScaleUpAbsY(int y) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? y : device->ScaleUpAbsY(y);
 }
 
 int AwtComponent::ScaleDownX(int x) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? x : device->ScaleDownX(x);
 }
 
 int AwtComponent::ScaleDownAbsX(int x) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? x : device->ScaleDownAbsX(x);
 }
 
 int AwtComponent::ScaleDownY(int y) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? y : device->ScaleDownY(y);
 }
 
 int AwtComponent::ScaleDownAbsY(int y) {
     int screen = GetScreenImOn();
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice* device = devices->GetDevice(screen);
+    AwtWin32GraphicsDevice* device = devices.Device(screen);
     return device == NULL ? y : device->ScaleDownAbsY(y);
 }
 

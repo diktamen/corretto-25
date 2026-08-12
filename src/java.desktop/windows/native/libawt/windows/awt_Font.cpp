@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2026, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -405,7 +405,7 @@ static int ScaleUpX(float x) {
     int deviceIndex = AwtWin32GraphicsDevice::DeviceIndexForWindow(
         ::GetDesktopWindow());
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(deviceIndex);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
     return device == NULL ? x : device->ScaleUpX(x);
 }
 
@@ -413,7 +413,7 @@ static int ScaleUpY(int y) {
     int deviceIndex = AwtWin32GraphicsDevice::DeviceIndexForWindow(
         ::GetDesktopWindow());
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(deviceIndex);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
     return device == NULL ? y : device->ScaleUpY(y);
 }
 
@@ -421,7 +421,7 @@ static int ScaleDownX(int x) {
     int deviceIndex = AwtWin32GraphicsDevice::DeviceIndexForWindow(
         ::GetDesktopWindow());
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(deviceIndex);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
     return device == NULL ? x : device->ScaleDownX(x);
 }
 
@@ -429,7 +429,7 @@ static int ScaleDownY(int y) {
     int deviceIndex = AwtWin32GraphicsDevice::DeviceIndexForWindow(
         ::GetDesktopWindow());
     Devices::InstanceAccess devices;
-    AwtWin32GraphicsDevice *device = devices->GetDevice(deviceIndex);
+    AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
     return device == NULL ? y : device->ScaleDownY(y);
 }
 
