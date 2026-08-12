@@ -114,8 +114,8 @@ jobs:
           bash configure
           --with-conf-name=${{ inputs.platform }}
           ${{ matrix.flags }}
-          --with-version-pre=${{ steps.build-meta.outputs.timestamp }}
-          --with-version-opt=${{ steps.build-meta.outputs.hash }}
+          --with-version-pre=
+          --with-version-opt=${{ steps.build-meta.outputs.timestamp }}-${{ steps.build-meta.outputs.hash }}
           --with-vendor-name=Diktamen
           --with-vendor-url=https://diktamen.com/
           --with-vendor-version-string=Diktamen-${{ steps.build-meta.outputs.version }}
