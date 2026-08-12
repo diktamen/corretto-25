@@ -781,19 +781,83 @@ void AwtWin32GraphicsDevice::Invalidate(JNIEnv *env)
  */
 
 
+/**
+ * Fallbacks used by the deviceIndex-based methods below when there is no
+ * device for the index, which happens while the device array is empty.
+ *
+ * Before JDK-8185862 the array could not be empty and these methods always
+ * had a device to answer from, so their callers are not written for a
+ * failure result. Rather than change that contract, answer from the primary
+ * display, or from a plausible default when even that is unavailable. A
+ * possibly inaccurate answer is preferable here: with no display attached
+ * there is nothing to render to, and the values are refreshed by the
+ * WM_DISPLAYCHANGE that follows the display coming back.
+ */
+static jobject GetDefaultColorModel(JNIEnv *env)
+{
+    // Mirrors Win32GraphicsDevice.defaultColorModel() on the java side.
+    // The default RGB model serves for both the dynamic and static cases:
+    // with no device there is no palette to track changes to.
+    jclass cmClass = env->FindClass("java/awt/image/ColorModel");
+    CHECK_NULL_RETURN(cmClass, NULL);
+    jmethodID mid = env->GetStaticMethodID(cmClass, "getRGBdefault",
+                                           "()Ljava/awt/image/ColorModel;");
+    if (mid == NULL) {
+        env->DeleteLocalRef(cmClass);
+        return NULL;
+    }
+    jobject cm = env->CallStaticObjectMethod(cmClass, mid);
+    env->DeleteLocalRef(cmClass);
+    return cm;
+}
+
+static HMONITOR GetPrimaryMonitor()
+{
+    POINT origin = {0, 0};
+    return ::MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+}
+
+/**
+ * Note: the returned structure is shared, unlike the per-device one. All
+ * callers only read from it. It is refilled on every call so that racing
+ * callers write identical contents.
+ */
+static LPMONITORINFO GetDefaultMonitorInfo()
+{
+    static MONITORINFOEX mieInfo;
+
+    memset((void*)(&mieInfo), 0, sizeof(MONITORINFOEX));
+    mieInfo.cbSize = sizeof(MONITORINFOEX);
+
+    HMONITOR primary = GetPrimaryMonitor();
+    if (primary == NULL || !::GetMonitorInfo(primary, &mieInfo)) {
+        // No monitor to describe. Report the virtual screen size, which is
+        // what GetSystemMetrics() still answers with no display attached.
+        memset((void*)(&mieInfo), 0, sizeof(MONITORINFOEX));
+        mieInfo.cbSize = sizeof(MONITORINFOEX);
+        mieInfo.rcMonitor.right = ::GetSystemMetrics(SM_CXSCREEN);
+        mieInfo.rcMonitor.bottom = ::GetSystemMetrics(SM_CYSCREEN);
+        mieInfo.rcWork = mieInfo.rcMonitor;
+        mieInfo.dwFlags = MONITORINFOF_PRIMARY;
+    }
+    return (LPMONITORINFO)&mieInfo;
+}
+
 jobject AwtWin32GraphicsDevice::GetColorModel(JNIEnv *env, jboolean dynamic,
                                               int deviceIndex)
 {
     Devices::InstanceAccess devices;
     AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
-    return device == NULL ? NULL : device->GetColorModel(env, dynamic);
+    return device == NULL ? GetDefaultColorModel(env)
+                          : device->GetColorModel(env, dynamic);
 }
 
 LPMONITORINFO AwtWin32GraphicsDevice::GetMonitorInfo(int deviceIndex)
 {
     Devices::InstanceAccess devices;
     AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
-    return device == NULL ? NULL : device->GetMonitorInfo();
+    return device == NULL ? GetDefaultMonitorInfo()
+                          : device->GetMonitorInfo();
 }
 
 /**
@@ -836,7 +900,9 @@ HMONITOR AwtWin32GraphicsDevice::GetMonitor(int deviceIndex)
 {
     Devices::InstanceAccess devices;
     AwtWin32GraphicsDevice *device = devices.Device(deviceIndex);
-    return device == NULL ? (HMONITOR)NULL : device->GetMonitor();
+    // GetPrimaryMonitor() is itself NULL with no monitor attached, which
+    // MonitorBounds() and D3DPipelineManager already handle.
+    return device == NULL ? GetPrimaryMonitor() : device->GetMonitor();
 }
 
 HPALETTE AwtWin32GraphicsDevice::GetPalette(int deviceIndex)
@@ -900,8 +966,13 @@ HDC AwtWin32GraphicsDevice::GetDCFromScreen(int screen) {
                 "AwtWin32GraphicsDevice::GetDCFromScreen screen=%d", screen);
     Devices::InstanceAccess devices;
     AwtWin32GraphicsDevice *dev = devices.Device(screen);
-    // MakeDCFromMonitor() returns a NULL HDC for a NULL monitor
-    return dev == NULL ? (HDC)NULL : MakeDCFromMonitor(dev->GetMonitor());
+    if (dev != NULL) {
+        return MakeDCFromMonitor(dev->GetMonitor());
+    }
+    // No device: a DC for the primary display is the best available answer.
+    // The caller deletes it with DeleteDC(), as for MakeDCFromMonitor().
+    // This is NULL with no display attached, which callers already handle.
+    return ::CreateDC(TEXT("DISPLAY"), NULL, NULL, NULL);
 }
 
 /** Compare elements of MONITORINFOEX structures for the given HMONITORs.
@@ -1454,7 +1525,8 @@ JNIEXPORT jobject JNICALL
 {
     Devices::InstanceAccess devices;
     AwtWin32GraphicsDevice *device = devices.Device(screen);
-    return device == NULL ? NULL : device->GetColorModel(env, dynamic);
+    return device == NULL ? GetDefaultColorModel(env)
+                          : device->GetColorModel(env, dynamic);
 }
 
 /*
