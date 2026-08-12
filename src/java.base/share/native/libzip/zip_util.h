@@ -234,6 +234,9 @@ typedef struct jzfile {   /* Zip file */
     jint metacount;       /* number of slots in metanames array */
     jlong lastModified;   /* last modified time */
     jlong locpos;         /* position of first LOC header (usually 0) */
+    jboolean xored;       /* if the in-house obfuscation transform is applied to
+                             this file's bytes; decided at open from the first
+                             bytes. See dl_detect()/dl_apply() in zip_util.c. */
 } jzfile;
 
 /*

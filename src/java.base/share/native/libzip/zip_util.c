@@ -46,7 +46,18 @@
 #include "zip_util.h"
 #include <zlib.h>
 
-/* USE_MMAP means mmap the CEN & ENDHDR part of the zip file. */
+/* USE_MMAP means mmap the CEN & ENDHDR part of the zip file. Set on every unix
+ * platform (CoreLibraries.gmk passes -DUSE_MMAP via CFLAGS_unix), so this path
+ * is live on macOS and Linux and only absent on Windows.
+ *
+ * An mmapped central directory bypasses the read layer where the obfuscation
+ * transform is undone, so readCEN() would hand back still-transformed bytes.
+ * Rather than XOR the mapping (which would need a private, writable mapping and
+ * lose the footprint benefit that is the whole point of mapping the CEN), the
+ * mapping is simply skipped for transformed archives: ZIP_Put_In_Cache0() clears
+ * zip->usemmap when it detects one, and every mmap path here is gated on that
+ * flag, so those archives take the ordinary read path. Plain archives -- the
+ * overwhelmingly common case -- keep mapping the CEN exactly as before. */
 #ifdef USE_MMAP
 #include <sys/mman.h>
 #endif
@@ -183,6 +194,85 @@ ZFILE_read(ZFILE zfd, char *buf, jint nbytes) {
 }
 
 /*
+ * Obfuscation transform for deployed application archives.
+ *
+ * Deployed archives are ordinary ZIP/JAR files whose bytes have been XORed with
+ * a repeating DL_KEY_LEN-byte key. Because the key is indexed by the *absolute*
+ * file offset, the transform can be undone in the read layer below, leaving all
+ * ZIP parsing, inflation and signature verification untouched.
+ *
+ * THIS IS OBFUSCATION, NOT SECURITY. Its only purpose is to stop a deployed
+ * archive from opening in a generic archive tool. The key is embedded in this
+ * runtime and the plaintext starts with a known signature, so the key is
+ * trivially recoverable from a single artifact. Integrity and authenticity come
+ * from the JAR signature, verified against the plaintext exactly as before.
+ *
+ * This is the native half, used by HotSpot for -Xbootclasspath/a and CDS. The
+ * Java half is java.util.zip.JarTransform. THE KEY MATERIAL MUST BE KEPT IN
+ * SYNC BETWEEN THE TWO.
+ */
+#define DL_KEY_LEN 32
+
+/* Key material, stored as two halves that are combined per byte at use. The
+ * effective key is therefore never a contiguous run of bytes in the shared
+ * library -- a speed bump for casual inspection, not a protection. Combining at
+ * use rather than caching a derived key keeps this free of shared mutable state,
+ * so no initialization order or locking is involved on these read paths. */
+static const unsigned char dl_key_a[DL_KEY_LEN] = {
+    0x3C, 0x91, 0x4E, 0x07, 0xB2, 0x65, 0x1A, 0xD3,
+    0x88, 0x2F, 0x70, 0xC6, 0x19, 0xE4, 0x5B, 0xA0,
+    0xD7, 0x32, 0x8C, 0x61, 0x0F, 0xB4, 0x59, 0xE2,
+    0x27, 0x9D, 0x4A, 0xF1, 0x06, 0xC8, 0x35, 0x7B
+};
+static const unsigned char dl_key_b[DL_KEY_LEN] = {
+    0x46, 0xAE, 0x8F, 0x02, 0x2C, 0x27, 0xC2, 0xB8,
+    0x99, 0x88, 0x40, 0x32, 0x45, 0x6D, 0x75, 0x13,
+    0xB3, 0xE3, 0x84, 0xF6, 0x4A, 0x4E, 0x75, 0x9C,
+    0x97, 0x8E, 0x25, 0x34, 0x3E, 0x6A, 0xEC, 0x3A
+};
+
+#define DL_KEY_AT(k) ((unsigned char)(dl_key_a[k] ^ dl_key_b[k]))
+
+/*
+ * Returns JNI_TRUE if the given bytes, read untransformed from offset 0, are a
+ * transformed archive. Every ZIP file starts with a "PK" signature, so two
+ * bytes suffice and no assumption is made about the archive having entries.
+ * A plain archive, or anything unrecognized, returns JNI_FALSE: unrecognized
+ * files are read as-is so that ZIP parsing reports its usual error.
+ */
+static jboolean
+dl_detect(const char *head, jlong len)
+{
+    if (len < 2) {
+        return JNI_FALSE;
+    }
+    if (head[0] == 'P' && head[1] == 'K') {
+        return JNI_FALSE;      /* plain archive */
+    }
+    return (((unsigned char)head[0] ^ DL_KEY_AT(0)) == 'P' &&
+            ((unsigned char)head[1] ^ DL_KEY_AT(1)) == 'K') ? JNI_TRUE : JNI_FALSE;
+}
+
+/*
+ * Undoes the transform in place over len bytes read from absolute file offset
+ * "offset". Keying on the absolute offset is what lets arbitrary random-access
+ * reads be decoded without the caller knowing its alignment.
+ */
+static void
+dl_apply(void *buf, jlong len, jlong offset)
+{
+    unsigned char *p = (unsigned char *)buf;
+    int k = (int)(offset % DL_KEY_LEN);
+    jlong i;
+    for (i = 0; i < len; i++) {
+        p[i] ^= DL_KEY_AT(k);
+        if (++k == DL_KEY_LEN) {
+            k = 0;
+        }
+    }
+}
+
+/*
  * Initialize zip file support. Return 0 if successful otherwise -1
  * if could not be initialized.
  */
@@ -211,7 +301,7 @@ InitializeZip()
  * Returns 0 if all bytes could be read, otherwise returns -1.
  */
 static int
-readFully(ZFILE zfd, void *buf, jlong len) {
+readFullyRaw(ZFILE zfd, void *buf, jlong len) {
   char *bp = (char *) buf;
 
   while (len > 0) {
@@ -234,17 +324,51 @@ readFully(ZFILE zfd, void *buf, jlong len) {
 }
 
 /*
- * Reads len bytes of data from the specified offset into buf.
+ * Reads len bytes of data into buf, continuing from the file's current
+ * position, undoing the obfuscation transform if "xored" is set.
  * Returns 0 if all bytes could be read, otherwise returns -1.
  */
 static int
-readFullyAt(ZFILE zfd, void *buf, jlong len, jlong offset)
+readFully(ZFILE zfd, void *buf, jlong len, jboolean xored)
+{
+    jlong offset = 0;
+
+    if (xored) {
+        /* The transform is keyed on the absolute file offset, which a
+         * position-relative read does not carry. Only pay for the query when
+         * there is a transform to undo. */
+        offset = IO_Lseek(zfd, 0, SEEK_CUR);
+        if (offset == -1) {
+            return -1;
+        }
+    }
+    if (readFullyRaw(zfd, buf, len) == -1) {
+        return -1;
+    }
+    if (xored) {
+        dl_apply(buf, len, offset);
+    }
+    return 0;
+}
+
+/*
+ * Reads len bytes of data from the specified offset into buf, undoing the
+ * obfuscation transform if "xored" is set.
+ * Returns 0 if all bytes could be read, otherwise returns -1.
+ */
+static int
+readFullyAt(ZFILE zfd, void *buf, jlong len, jlong offset, jboolean xored)
 {
     if (IO_Lseek(zfd, offset, SEEK_SET) == -1) {
         return -1; /* lseek failure. */
     }
-
-    return readFully(zfd, buf, len);
+    if (readFullyRaw(zfd, buf, len) == -1) {
+        return -1;
+    }
+    if (xored) {
+        dl_apply(buf, len, offset);
+    }
+    return 0;
 }
 
 /*
@@ -313,9 +437,9 @@ static jboolean verifyEND(jzfile *zip, jlong endpos, char *endbuf) {
     char buf[4];
     return (cenpos >= 0 &&
             locpos >= 0 &&
-            readFullyAt(zip->zfd, buf, sizeof(buf), cenpos) != -1 &&
+            readFullyAt(zip->zfd, buf, sizeof(buf), cenpos, zip->xored) != -1 &&
             CENSIG_AT(buf) &&
-            readFullyAt(zip->zfd, buf, sizeof(buf), locpos) != -1 &&
+            readFullyAt(zip->zfd, buf, sizeof(buf), locpos, zip->xored) != -1 &&
             LOCSIG_AT(buf));
 }
 
@@ -347,7 +471,7 @@ findEND(jzfile *zip, void *endbuf)
         }
 
         if (readFullyAt(zfd, buf + off, sizeof(buf) - off,
-                        pos + off) == -1) {
+                        pos + off, zip->xored) == -1) {
             return -1;  /* System error */
         }
 
@@ -368,8 +492,8 @@ findEND(jzfile *zip, void *endbuf)
                     if (zip->comment == NULL) {
                         return -1;
                     }
-                    if (readFullyAt(zfd, zip->comment, clen, pos + i + ENDHDR)
-                        == -1) {
+                    if (readFullyAt(zfd, zip->comment, clen, pos + i + ENDHDR,
+                                    zip->xored) == -1) {
                         free(zip->comment);
                         zip->comment = NULL;
                         return -1;
@@ -407,11 +531,11 @@ findEND64(jzfile *zip, void *end64buf, jlong endpos)
 {
     char loc64[ZIP64_LOCHDR];
     jlong end64pos;
-    if (readFullyAt(zip->zfd, loc64, ZIP64_LOCHDR, endpos - ZIP64_LOCHDR) == -1) {
+    if (readFullyAt(zip->zfd, loc64, ZIP64_LOCHDR, endpos - ZIP64_LOCHDR, zip->xored) == -1) {
         return -1;    // end64 locator not found
     }
     end64pos = ZIP64_LOCOFF(loc64);
-    if (readFullyAt(zip->zfd, end64buf, ZIP64_ENDHDR, end64pos) == -1) {
+    if (readFullyAt(zip->zfd, end64buf, ZIP64_ENDHDR, end64pos, zip->xored) == -1) {
         return -1;    // end64 record not found
     }
     return end64pos;
@@ -672,7 +796,7 @@ readCEN(jzfile *zip, jint knownTotal)
 #endif
     {
         if ((cenbuf = malloc((size_t) cenlen)) == NULL ||
-            (readFullyAt(zip->zfd, cenbuf, cenlen, cenpos) == -1))
+            (readFullyAt(zip->zfd, cenbuf, cenlen, cenpos, zip->xored) == -1))
         goto Catch;
     }
 
@@ -873,7 +997,21 @@ ZIP_Put_In_Cache0(const char *name, ZFILE zfd, char **pmsg, jlong lastModified,
     }
 
     // Assumption, zfd refers to start of file. Trivially, reuse errbuf.
-    if (readFully(zfd, errbuf, 4) != -1) {  // errors will be handled later
+    // Read raw: whether the obfuscation transform applies is exactly what these
+    // bytes decide, so it cannot be undone until after they are classified.
+    // Everything downstream reads through readFully/readFullyAt with zip->xored.
+    if (readFullyRaw(zfd, errbuf, 4) != -1) {  // errors will be handled later
+        zip->xored = dl_detect(errbuf, 4);
+        if (zip->xored) {
+            dl_apply(errbuf, 4, 0);
+#ifdef USE_MMAP
+            /* An mmapped CEN would bypass the read layer that undoes the
+             * transform. Fall back to reading the CEN for this archive; every
+             * mmap path is gated on this flag. Must happen before readCEN(),
+             * which is the first consumer. */
+            zip->usemmap = JNI_FALSE;
+#endif
+        }
         zip->locsig = LOCSIG_AT(errbuf) ? JNI_TRUE : JNI_FALSE;
     }
 
@@ -967,11 +1105,11 @@ readCENHeader(jzfile *zip, jlong cenpos, jint bufsize)
     if (bufsize > zip->len - cenpos)
         bufsize = (jint)(zip->len - cenpos);
     if ((cen = malloc(bufsize)) == NULL)       goto Catch;
-    if (readFullyAt(zfd, cen, bufsize, cenpos) == -1)     goto Catch;
+    if (readFullyAt(zfd, cen, bufsize, cenpos, zip->xored) == -1) goto Catch;
     censize = CENSIZE(cen);
     if (censize <= bufsize) return cen;
     if ((cen = realloc(cen, censize)) == NULL)              goto Catch;
-    if (readFully(zfd, cen+bufsize, censize-bufsize) == -1) goto Catch;
+    if (readFully(zfd, cen+bufsize, censize-bufsize, zip->xored) == -1) goto Catch;
     return cen;
 
  Catch:
@@ -1271,7 +1409,7 @@ ZIP_GetEntryDataOffset(jzfile *zip, jzentry *entry)
      */
     if (entry->pos <= 0) {
         unsigned char loc[LOCHDR];
-        if (readFullyAt(zip->zfd, loc, LOCHDR, -(entry->pos)) == -1) {
+        if (readFullyAt(zip->zfd, loc, LOCHDR, -(entry->pos), zip->xored) == -1) {
             zip->msg = "error reading zip file";
             return -1;
         }
@@ -1336,7 +1474,7 @@ ZIP_Read(jzfile *zip, jzentry *entry, jlong pos, void *buf, jint len)
         return -1;
     }
 
-    if (readFullyAt(zip->zfd, buf, len, start) == -1) {
+    if (readFullyAt(zip->zfd, buf, len, start, zip->xored) == -1) {
         zip->msg = "ZIP_Read: error reading zip file";
         return -1;
     }

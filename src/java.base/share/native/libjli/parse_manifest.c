@@ -40,6 +40,110 @@ static char     *manifest;
 static const char       *manifest_name = "META-INF/MANIFEST.MF";
 
 /*
+ * Obfuscation transform for deployed application archives.
+ *
+ * This is the launcher's copy, needed because the launcher parses a jar's
+ * manifest itself (to find Main-Class for "java -jar", Launcher-Agent-Class,
+ * and friends) using the reader below rather than going through libzip or
+ * java.util.zip. Without it, "java -jar app.internaldata" fails with
+ * "Invalid or corrupt jarfile" before any Java code runs.
+ *
+ * THIS IS OBFUSCATION, NOT SECURITY. See the longer note in
+ * libzip/zip_util.c. Integrity and authenticity come from the JAR signature.
+ *
+ * THE KEY MATERIAL MUST BE KEPT IN SYNC with all of:
+ *   - java.util.zip.JarTransform          (Java read path)
+ *   - dl_apply() in libzip/zip_util.c     (native read path: boot append, CDS)
+ *   - inhouse/jartransform/JarTransformTool.java  (producer, and the reference
+ *                                                  the serving side follows)
+ * test/jdk/java/util/zip/ObfuscatedArchive.java fails if they diverge.
+ */
+#define DL_KEY_LEN 32
+
+static const unsigned char dl_key_a[DL_KEY_LEN] = {
+    0x3C, 0x91, 0x4E, 0x07, 0xB2, 0x65, 0x1A, 0xD3,
+    0x88, 0x2F, 0x70, 0xC6, 0x19, 0xE4, 0x5B, 0xA0,
+    0xD7, 0x32, 0x8C, 0x61, 0x0F, 0xB4, 0x59, 0xE2,
+    0x27, 0x9D, 0x4A, 0xF1, 0x06, 0xC8, 0x35, 0x7B
+};
+static const unsigned char dl_key_b[DL_KEY_LEN] = {
+    0x46, 0xAE, 0x8F, 0x02, 0x2C, 0x27, 0xC2, 0xB8,
+    0x99, 0x88, 0x40, 0x32, 0x45, 0x6D, 0x75, 0x13,
+    0xB3, 0xE3, 0x84, 0xF6, 0x4A, 0x4E, 0x75, 0x9C,
+    0x97, 0x8E, 0x25, 0x34, 0x3E, 0x6A, 0xEC, 0x3A
+};
+
+#define DL_KEY_AT(k) ((unsigned char)(dl_key_a[k] ^ dl_key_b[k]))
+
+/*
+ * Classifies an archive from the first bytes at offset 0. Every ZIP file starts
+ * with a "PK" signature, so two bytes suffice. Anything unrecognized is treated
+ * as untransformed so that ZIP parsing reports its usual error.
+ */
+static jboolean
+dl_detect_fd(int fd)
+{
+    unsigned char head[2];
+    jboolean result = JNI_FALSE;
+
+    if (JLI_Lseek(fd, 0, SEEK_SET) < (jlong)0) {
+        return JNI_FALSE;
+    }
+    /* read() on windows takes an unsigned int for count; cast as elsewhere in
+     * this file to avoid a size_t conversion warning. */
+    if (read(fd, head, (unsigned int)sizeof(head)) == (int)sizeof(head)
+        && !(head[0] == 'P' && head[1] == 'K')
+        && (head[0] ^ DL_KEY_AT(0)) == 'P'
+        && (head[1] ^ DL_KEY_AT(1)) == 'K') {
+        result = JNI_TRUE;
+    }
+    /* Callers seek explicitly before reading, but do not leave the position
+     * moved for one that does not. */
+    (void)JLI_Lseek(fd, 0, SEEK_SET);
+    return result;
+}
+
+/* Undoes the transform in place over len bytes read from absolute offset. */
+static void
+dl_apply(void *buf, jlong len, jlong offset)
+{
+    unsigned char *p = (unsigned char *)buf;
+    int k = (int)(offset % DL_KEY_LEN);
+    jlong i;
+    for (i = 0; i < len; i++) {
+        p[i] ^= DL_KEY_AT(k);
+        if (++k == DL_KEY_LEN) {
+            k = 0;
+        }
+    }
+}
+
+/*
+ * read() that undoes the transform when "xored" is set. Every read in this file
+ * either follows an explicit seek or continues sequentially, so the absolute
+ * offset -- which is what indexes the key -- is taken from the file position.
+ * Returns what read() returns.
+ */
+static int
+dl_read(int fd, void *buf, unsigned int count, jboolean xored)
+{
+    jlong offset = 0;
+    int n;
+
+    if (xored) {
+        offset = JLI_Lseek(fd, 0, SEEK_CUR);
+        if (offset < (jlong)0) {
+            return -1;
+        }
+    }
+    n = read(fd, buf, count);
+    if (n > 0 && xored) {
+        dl_apply(buf, n, offset);
+    }
+    return n;
+}
+
+/*
  * Inflate the manifest file (or any file for that matter).
  *
  *   fd:        File descriptor of the jar file.
@@ -54,7 +158,7 @@ static const char       *manifest_name = "META-INF/MANIFEST.MF";
  * returns NULL.
  */
 static char *
-inflate_file(int fd, zentry *entry, int *size_out)
+inflate_file(int fd, zentry *entry, int *size_out, jboolean xored)
 {
     char        *in;
     char        *out;
@@ -66,7 +170,7 @@ inflate_file(int fd, zentry *entry, int *size_out)
         return (NULL);
     if ((in = malloc(entry->csize + 1)) == NULL)
         return (NULL);
-    if ((size_t)(read(fd, in, (unsigned int)entry->csize)) != entry->csize) {
+    if ((size_t)(dl_read(fd, in, (unsigned int)entry->csize, xored)) != entry->csize) {
         free(in);
         return (NULL);
     }
@@ -134,10 +238,10 @@ inflate_file(int fd, zentry *entry, int *size_out)
 
 /** Reads count bytes from fd at position pos into given buffer. */
 static jboolean
-readAt(int fd, jlong pos, unsigned int count, void *buf) {
+readAt(int fd, jlong pos, unsigned int count, void *buf, jboolean xored) {
     return (pos >= 0
             && JLI_Lseek(fd, pos, SEEK_SET) == pos
-            && read(fd, buf, count) == (jlong) count);
+            && dl_read(fd, buf, count, xored) == (jlong) count);
 }
 
 
@@ -148,7 +252,8 @@ readAt(int fd, jlong pos, unsigned int count, void *buf) {
  */
 static jboolean
 is_valid_end_header(int fd, jlong endpos,
-                    jlong censiz, jlong cenoff, jlong entries) {
+                    jlong censiz, jlong cenoff, jlong entries,
+                    jboolean xored) {
     Byte cenhdr[CENHDR];
     Byte lochdr[LOCHDR];
     // Expected offset of the first central directory header
@@ -159,9 +264,9 @@ is_valid_end_header(int fd, jlong endpos,
         (censiz == 0 ||
          // Validate first CEN and LOC header signatures.
          // Central directory must come directly before the end header.
-         (readAt(fd, censtart, CENHDR, cenhdr)
+         (readAt(fd, censtart, CENHDR, cenhdr, xored)
           && CENSIG_AT(cenhdr)
-          && readAt(fd, base_offset + CENOFF(cenhdr), LOCHDR, lochdr)
+          && readAt(fd, base_offset + CENOFF(cenhdr), LOCHDR, lochdr, xored)
           && LOCSIG_AT(lochdr)
           && CENNAM(cenhdr) == LOCNAM(lochdr)));
 }
@@ -174,7 +279,7 @@ is_valid_end_header(int fd, jlong endpos,
  */
 static jboolean
 is_zip64_endhdr(int fd, const Byte *p, jlong end64pos,
-                jlong censiz, jlong cenoff, jlong entries) {
+                jlong censiz, jlong cenoff, jlong entries, jboolean xored) {
     if (ZIP64_ENDSIG_AT(p)) {
         jlong censiz64 = ZIP64_ENDSIZ(p);
         jlong cenoff64 = ZIP64_ENDOFF(p);
@@ -182,7 +287,8 @@ is_zip64_endhdr(int fd, const Byte *p, jlong end64pos,
         return (censiz64 == censiz || censiz == ZIP64_MAGICVAL)
             && (cenoff64 == cenoff || cenoff == ZIP64_MAGICVAL)
             && (entries64 == entries || entries == ZIP64_MAGICCOUNT)
-            && is_valid_end_header(fd, end64pos, censiz64, cenoff64, entries64);
+            && is_valid_end_header(fd, end64pos, censiz64, cenoff64, entries64,
+                                   xored);
     }
     return JNI_FALSE;
 }
@@ -195,7 +301,7 @@ is_zip64_endhdr(int fd, const Byte *p, jlong end64pos,
  */
 static int
 find_positions64(int fd, const Byte * const endhdr, const jlong endpos,
-                 jlong* base_offset, jlong* censtart)
+                 jlong* base_offset, jlong* censtart, jboolean xored)
 {
     jlong censiz = ENDSIZ(endhdr);
     jlong cenoff = ENDOFF(endhdr);
@@ -204,19 +310,20 @@ find_positions64(int fd, const Byte * const endhdr, const jlong endpos,
     Byte buf[ZIP64_ENDHDR + ZIP64_LOCHDR];
     if (censiz + cenoff != endpos
         && (end64pos = endpos - sizeof(buf)) >= (jlong)0
-        && readAt(fd, end64pos, sizeof(buf), buf)
+        && readAt(fd, end64pos, sizeof(buf), buf, xored)
         && ZIP64_LOCSIG_AT(buf + ZIP64_ENDHDR)
         && (jlong) ZIP64_LOCDSK(buf + ZIP64_ENDHDR) == ENDDSK(endhdr)
-        && (is_zip64_endhdr(fd, buf, end64pos, censiz, cenoff, entries)
+        && (is_zip64_endhdr(fd, buf, end64pos, censiz, cenoff, entries, xored)
             || // A variable sized "zip64 extensible data sector" ?
             ((end64pos = ZIP64_LOCOFF(buf + ZIP64_ENDHDR)) >= (jlong)0
-             && readAt(fd, end64pos, ZIP64_ENDHDR, buf)
-             && is_zip64_endhdr(fd, buf, end64pos, censiz, cenoff, entries)))
+             && readAt(fd, end64pos, ZIP64_ENDHDR, buf, xored)
+             && is_zip64_endhdr(fd, buf, end64pos, censiz, cenoff, entries,
+                                xored)))
         ) {
         *censtart = end64pos - ZIP64_ENDSIZ(buf);
         *base_offset = *censtart - ZIP64_ENDOFF(buf);
     } else {
-        if (!is_valid_end_header(fd, endpos, censiz, cenoff, entries))
+        if (!is_valid_end_header(fd, endpos, censiz, cenoff, entries, xored))
             return -1;
         *censtart = endpos - censiz;
         *base_offset = *censtart - cenoff;
@@ -232,7 +339,8 @@ find_positions64(int fd, const Byte * const endhdr, const jlong endpos,
  * @return 0 if successful, -1 in case of failure
  */
 static int
-find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart)
+find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart,
+               jboolean xored)
 {
     jlong   len;
     jlong   pos;
@@ -250,10 +358,10 @@ find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart)
      */
     if ((pos = JLI_Lseek(fd, -ENDHDR, SEEK_END)) < (jlong)0)
         return (-1);
-    if (read(fd, eb, ENDHDR) < 0)
+    if (dl_read(fd, eb, ENDHDR, xored) < 0)
         return (-1);
     if (ENDSIG_AT(eb)) {
-        return find_positions64(fd, eb, pos, base_offset, censtart);
+        return find_positions64(fd, eb, pos, base_offset, censtart, xored);
     }
 
     /*
@@ -275,7 +383,7 @@ find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart)
      * to an unsigned int here is safe since it is guaranteed to be
      * less than END_MAXLEN.
      */
-    if ((bytes = read(fd, buffer, (unsigned int)len)) < 0) {
+    if ((bytes = dl_read(fd, buffer, (unsigned int)len, xored)) < 0) {
         free(buffer);
         return (-1);
     }
@@ -290,7 +398,7 @@ find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart)
             (void) memcpy(eb, cp, ENDHDR);
             pos = flen - (endpos - cp);
             free(buffer);
-            return find_positions64(fd, eb, pos, base_offset, censtart);
+            return find_positions64(fd, eb, pos, base_offset, censtart, xored);
         }
     free(buffer);
     return (-1);
@@ -327,7 +435,7 @@ find_positions(int fd, Byte *eb, jlong* base_offset, jlong* censtart)
  * in mind when optimizing this code.
  */
 static int
-find_file(int fd, zentry *entry, const char *file_name)
+find_file(int fd, zentry *entry, const char *file_name, jboolean xored)
 {
     int     bytes;
     int     res;
@@ -361,7 +469,7 @@ find_file(int fd, zentry *entry, const char *file_name)
 
     bp = buffer;
 
-    if (find_positions(fd, bp, &base_offset, &censtart) == -1) {
+    if (find_positions(fd, bp, &base_offset, &censtart, xored) == -1) {
         free(buffer);
         return -1;
     }
@@ -370,7 +478,7 @@ find_file(int fd, zentry *entry, const char *file_name)
         return -1;
     }
 
-    if ((bytes = read(fd, bp, MINREAD)) < 0) {
+    if ((bytes = dl_read(fd, bp, MINREAD, xored)) < 0) {
         free(buffer);
         return (-1);
     }
@@ -392,7 +500,7 @@ find_file(int fd, zentry *entry, const char *file_name)
          */
         if (bytes < CENHDR) {
             p = memmove(bp, p, bytes);
-            if ((res = read(fd, bp + bytes, MINREAD)) <= 0) {
+            if ((res = dl_read(fd, bp + bytes, MINREAD, xored)) <= 0) {
                 free(buffer);
                 return (-1);
             }
@@ -404,7 +512,7 @@ find_file(int fd, zentry *entry, const char *file_name)
                 p = memmove(bp, p, bytes);
             read_size = entry_size - bytes + SIGSIZ;
             read_size = (read_size < MINREAD) ? MINREAD : read_size;
-            if ((res = read(fd, bp + bytes,  read_size)) <= 0) {
+            if ((res = dl_read(fd, bp + bytes, read_size, xored)) <= 0) {
                 free(buffer);
                 return (-1);
             }
@@ -422,7 +530,7 @@ find_file(int fd, zentry *entry, const char *file_name)
                 free(buffer);
                 return (-1);
             }
-            if (read(fd, locbuf, LOCHDR) < 0) {
+            if (dl_read(fd, locbuf, LOCHDR, xored) < 0) {
                 free(buffer);
                 return (-1);
             }
@@ -583,6 +691,7 @@ JLI_ParseManifest(char *jarfile, manifest_info *info)
     char    *name;
     char    *value;
     int     rc;
+    jboolean xored;
 
     if ((fd = JLI_Open(jarfile, O_RDONLY
 #ifdef O_LARGEFILE
@@ -594,12 +703,14 @@ JLI_ParseManifest(char *jarfile, manifest_info *info)
         )) == -1) {
         return (-1);
     }
+    /* Classify the archive once per open; every read below consults this. */
+    xored = dl_detect_fd(fd);
     info->splashscreen_image_file_name = NULL;
-    if ((rc = find_file(fd, &entry, manifest_name)) != 0) {
+    if ((rc = find_file(fd, &entry, manifest_name, xored)) != 0) {
         close(fd);
         return (-2);
     }
-    manifest = inflate_file(fd, &entry, NULL);
+    manifest = inflate_file(fd, &entry, NULL, xored);
     if (manifest == NULL) {
         close(fd);
         return (-2);
@@ -626,6 +737,7 @@ JLI_JarUnpackFile(const char *jarfile, const char *filename, int *size) {
     int     fd;
     zentry  entry;
     void    *data = NULL;
+    jboolean xored;
 
     if ((fd = JLI_Open(jarfile, O_RDONLY
 #ifdef O_LARGEFILE
@@ -637,8 +749,10 @@ JLI_JarUnpackFile(const char *jarfile, const char *filename, int *size) {
         )) == -1) {
         return NULL;
     }
-    if (find_file(fd, &entry, filename) == 0) {
-        data = inflate_file(fd, &entry, size);
+    /* Classify the archive once per open; every read below consults this. */
+    xored = dl_detect_fd(fd);
+    if (find_file(fd, &entry, filename, xored) == 0) {
+        data = inflate_file(fd, &entry, size, xored);
     }
     close(fd);
     return (data);
@@ -674,6 +788,7 @@ JLI_ManifestIterate(const char *jarfile, attribute_closure ac, void *user_data)
     char    *name;
     char    *value;
     int     rc;
+    jboolean xored;
 
     if ((fd = JLI_Open(jarfile, O_RDONLY
 #ifdef O_LARGEFILE
@@ -685,13 +800,15 @@ JLI_ManifestIterate(const char *jarfile, attribute_closure ac, void *user_data)
         )) == -1) {
         return (-1);
     }
+    /* Classify the archive once per open; every read below consults this. */
+    xored = dl_detect_fd(fd);
 
-    if ((rc = find_file(fd, &entry, manifest_name)) != 0) {
+    if ((rc = find_file(fd, &entry, manifest_name, xored)) != 0) {
         close(fd);
         return (-2);
     }
 
-    mp = inflate_file(fd, &entry, NULL);
+    mp = inflate_file(fd, &entry, NULL, xored);
     if (mp == NULL) {
         close(fd);
         return (-2);

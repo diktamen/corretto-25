@@ -140,6 +140,23 @@ public final class SystemProps {
         fillI18nProps(props,"user.variant",  raw.propDefault(Raw._display_variant_NDX),
                 raw.propDefault(Raw._format_variant_NDX));
 
+        /* In-house addition. Declares that this runtime can read application
+         * archives carrying the obfuscation transform, so a client can decide
+         * whether to ask a server for transformed artifacts. A runtime without
+         * the transform simply does not set this, and callers must treat an
+         * absent or unrecognized value as "not supported".
+         *
+         * putIfAbsent, so -D overrides it: support can tell a user to run with
+         * -Ddiktamen.archive.transform=off to stop the launcher asking for
+         * transformed artifacts, without needing a separate kill switch.
+         *
+         * The value duplicates JarTransform.VERSION, which is package-private
+         * to java.util.zip and so not reachable from here. They are kept honest
+         * by test/jdk/java/util/zip/ObfuscatedArchive.java, which asserts that
+         * this property is present and that the runtime really can read a
+         * transformed archive. */
+        putIfAbsent(props, "diktamen.archive.transform", "v1");
+
         return props;
     }
 

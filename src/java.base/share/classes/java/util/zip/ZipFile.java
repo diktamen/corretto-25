@@ -1168,6 +1168,10 @@ public class ZipFile implements ZipConstants, Closeable {
         private int[] signatureMetaNames;    // positions of signature related entries, if such exist
         private Map<Integer, BitSet> metaVersions; // Versions found in META-INF/versions/, by entry name hash
         private final boolean startsWithLoc; // true, if ZIP file starts with LOCSIG (usually true)
+        // Whether this archive carries the in-house obfuscation transform, as
+        // one of the JarTransform constants. Decided once, at open, from the
+        // first bytes of the file; read on every readAt/readFullyAt.
+        private final int transform;
 
         // A Hashmap for all entries.
         //
@@ -1539,6 +1543,12 @@ public class ZipFile implements ZipConstants, Closeable {
                 this.zfile = new RandomAccessFile(key.file, "r");
             }
             try {
+                // Classify the archive before anything parses it: initCEN and
+                // everything below it read through readAt/readFullyAt, which
+                // consult this field. Uses a raw read, as the transform is not
+                // known yet.
+                byte[] head = new byte[4];
+                this.transform = JarTransform.detect(head, readAtRaw(head, 0, 4, 0));
                 initCEN(-1, zipCoder);
                 byte[] buf = new byte[4];
                 readFullyAt(buf, 0, 4, 0);
@@ -1567,6 +1577,7 @@ public class ZipFile implements ZipConstants, Closeable {
         private final int readFullyAt(byte[] buf, int off, int len, long pos)
             throws IOException
         {
+            final int start = off;
             synchronized (zfile) {
                 zfile.seek(pos);
                 int N = len;
@@ -1576,11 +1587,27 @@ public class ZipFile implements ZipConstants, Closeable {
                     off += n;
                     N -= n;
                 }
-                return len;
             }
+            // Outside the lock: the buffer is ours and the file is untouched.
+            if (transform == JarTransform.TRANSFORMED) {
+                JarTransform.apply(buf, start, len, pos);
+            }
+            return len;
         }
 
         private final int readAt(byte[] buf, int off, int len, long pos)
+            throws IOException
+        {
+            int n = readAtRaw(buf, off, len, pos);
+            if (n > 0 && transform == JarTransform.TRANSFORMED) {
+                JarTransform.apply(buf, off, n, pos);
+            }
+            return n;
+        }
+
+        // Reads without undoing the obfuscation transform. Only for classifying
+        // the archive at open time, before the transform is known.
+        private final int readAtRaw(byte[] buf, int off, int len, long pos)
             throws IOException
         {
             synchronized (zfile) {
@@ -1689,6 +1716,14 @@ public class ZipFile implements ZipConstants, Closeable {
                         return end;
                     }
                 }
+            }
+            if (transform == JarTransform.UNKNOWN) {
+                // Distinguishes "this file is not a container we recognize"
+                // (wrong key, truncated download, wrong file entirely) from a
+                // genuinely malformed archive. Worth the extra words: without
+                // it both cases surface identically here.
+                throw new ZipException("zip END header not found"
+                                       + " (unrecognized container format)");
             }
             throw new ZipException("zip END header not found");
         }
