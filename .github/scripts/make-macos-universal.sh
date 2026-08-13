@@ -40,8 +40,87 @@ ALLOWED_DIFFERENT='^\./release$|\.jsa$|\.jmod$'
 # so merge cleanly.
 n_jmod=0
 
-n_lipo=0; n_copy=0; n_drop=0; n_only_arm=0; n_only_x64=0
+n_lipo=0; n_copy=0; n_drop=0; n_only_arm=0; n_only_x64=0; n_container=0
 mismatch_list=""
+
+# Mach-O files that exist in only one of the two builds and so stay
+# single-architecture on purpose. libsleef.dylib is the real case: SLEEF vector
+# math is built for AArch64 only. Recorded here so the verification step can
+# tell "deliberately thin" from "the merge missed it".
+THIN_ALLOWED_FILE="${THIN_ALLOWED_FILE:-}"
+[[ -n "$THIN_ALLOWED_FILE" ]] && : > "$THIN_ALLOWED_FILE"
+
+note_arch_exclusive() {   # $1 = path relative to the image root
+    [[ -n "$THIN_ALLOWED_FILE" ]] && printf '%s\n' "${1#./}" >> "$THIN_ALLOWED_FILE"
+    return 0
+}
+
+# --- container formats -------------------------------------------------------
+# ct.sym, jrt-fs.jar, src.zip and lib/modules differ byte-for-byte between the
+# two builds while holding architecture-independent content: these formats embed
+# build metadata (entry order, timestamps) that is not reproducible across two
+# separate builds. Compare what is inside them instead of their bytes, so a
+# genuine content difference is still caught.
+
+# name + CRC + size of every entry, order-independent. CRC makes this a real
+# content comparison rather than a metadata one.
+zip_inventory() {
+    python3 - "$1" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for e in sorted(z.infolist(), key=lambda e: e.filename):
+        print(e.filename, e.CRC, e.file_size)
+PY
+}
+
+# For the jimage, extract both and compare the extracted trees. An inventory
+# would not be enough: java.base's module-info can carry a ModuleHashes
+# attribute over the other modules, whose jmods hold per-architecture native
+# libraries. Those hashes are fixed-length, so a difference there does not
+# change any entry's size and would slip past a size-based check.
+#
+# Differences confined to module-info.class are accepted: they are that hash
+# attribute, and it cannot hold for a universal image anyway, since every
+# binary in it has been rewritten by lipo. Anything else is a real difference
+# in class or resource content and fails.
+jimage_equal() {
+    local a="$1" b="$2"
+    local jimage="${JIMAGE:-$(command -v jimage 2>/dev/null || true)}"
+    if [[ -z "$jimage" || ! -x "$jimage" ]]; then
+        echo "  cannot compare $(basename "$a"): no jimage tool (set JIMAGE=<jdk>/bin/jimage)" >&2
+        return 1
+    fi
+    local tmp; tmp="$(mktemp -d)"
+    "$jimage" extract --dir "$tmp/a" "$a" >/dev/null
+    "$jimage" extract --dir "$tmp/b" "$b" >/dev/null
+
+    local diffs
+    diffs="$(cd "$tmp" && diff -rq a b 2>&1 \
+        | sed -E 's|^Files a/(.*) and b/.* differ$|differs: \1|; s|^Only in ([ab])/|only in \1: |' || true)"
+    if [[ -z "$diffs" ]]; then
+        rm -rf "$tmp"
+        return 0
+    fi
+    local unexpected
+    unexpected="$(grep -v 'module-info\.class' <<< "$diffs" || true)"
+    if [[ -z "$unexpected" ]]; then
+        echo "  $(basename "$a"): only module-info.class differs (ModuleHashes); accepted"
+        rm -rf "$tmp"
+        return 0
+    fi
+    echo "  $(basename "$a"): differs beyond module-info.class:" >&2
+    head -20 <<< "$unexpected" | sed 's/^/    /' >&2
+    rm -rf "$tmp"
+    return 1
+}
+
+container_equal() {
+    case "$(basename "$1")" in
+        *.zip|*.jar|*.sym) [[ "$(zip_inventory "$1")" == "$(zip_inventory "$2")" ]] ;;
+        modules)           jimage_equal "$1" "$2" ;;
+        *)                 return 1 ;;
+    esac
+}
 
 # Octal mode of a file. BSD (macOS, where this runs) and GNU spell this
 # differently, and GNU 'stat -f' exits 0 while meaning something else entirely
@@ -90,6 +169,7 @@ while IFS= read -r -d '' rel; do
     if [[ ! -e "$x64" ]]; then
         cp -p "$arm" "$out"
         n_only_arm=$((n_only_arm + 1))
+        file -b "$arm" | grep -q 'Mach-O' && note_arch_exclusive "$rel"
         echo "only-in-aarch64: $rel"
         continue
     fi
@@ -115,6 +195,14 @@ while IFS= read -r -d '' rel; do
         continue
     fi
 
+    # Bytes differ. For container formats, compare the contents before giving up.
+    if container_equal "$arm" "$x64"; then
+        cp -p "$arm" "$out"
+        n_container=$((n_container + 1))
+        echo "container content-identical: $rel"
+        continue
+    fi
+
     if [[ "$rel" =~ $ALLOWED_DIFFERENT ]]; then
         cp -p "$arm" "$out"
         n_copy=$((n_copy + 1))
@@ -132,6 +220,7 @@ while IFS= read -r -d '' rel; do
         mkdir -p "$(dirname "$OUT_HOME/$rel")"
         cp -p "$X64_HOME/$rel" "$OUT_HOME/$rel"
         n_only_x64=$((n_only_x64 + 1))
+        file -b "$X64_HOME/$rel" | grep -q 'Mach-O' && note_arch_exclusive "$rel"
         echo "only-in-x64: $rel"
     fi
 done < <(find . -mindepth 1 -print0)
@@ -151,6 +240,7 @@ echo "  copied (identical)           : $n_copy"
 echo "  dropped (CDS archives)       : $n_drop"
 echo "  only in aarch64              : $n_only_arm"
 echo "  only in x64                  : $n_only_x64"
+echo "  containers content-identical : $n_container"
 echo "  .jmod kept as aarch64        : $n_jmod"
 echo "======================================================="
 

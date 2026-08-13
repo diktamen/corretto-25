@@ -104,6 +104,8 @@ jobs:
           rm -rf "universal/$bundle/Contents/_CodeSignature"
           rm -rf "universal/$bundle/Contents/Home"
 
+          JIMAGE="${{ steps.extract.outputs.arm-home }}/bin/jimage" \
+          THIN_ALLOWED_FILE="$PWD/thin-allowed-jdk.txt" \
           .github/scripts/make-macos-universal.sh \
             "${{ steps.extract.outputs.x64-home }}" \
             "${{ steps.extract.outputs.arm-home }}" \
@@ -133,6 +135,8 @@ jobs:
           "$jlink" --module-path "${{ steps.extract.outputs.arm-home }}/jmods" \
                    --add-modules ALL-MODULE-PATH --output rt-aarch64
 
+          JIMAGE="${{ steps.extract.outputs.arm-home }}/bin/jimage" \
+          THIN_ALLOWED_FILE="$PWD/thin-allowed-rt.txt" \
           .github/scripts/make-macos-universal.sh \
             "$PWD/rt-x64" "$PWD/rt-aarch64" "$PWD/rt-universal"
 
@@ -147,18 +151,29 @@ jobs:
           bundle="${{ steps.extract.outputs.bundle-dir }}"
 
           check_image() {
-            local label="$1" home="$2"
+            local label="$1" home="$2" allowed="$3"
             echo "=================== $label ==================="
+            [[ -f "$allowed" ]] || : > "$allowed"
 
-            # Nothing under the image may be left single-architecture.
-            local thin=0
+            # Nothing may be left single-architecture, except files only one of
+            # the two builds produced -- lib/libsleef.dylib is AArch64-only by
+            # design. The merge script records those, so an unlisted thin file
+            # still means the merge missed something.
+            local thin=0 expected=0 rel
             while IFS= read -r f; do
               if file -b "$f" | grep -q 'Mach-O' && ! file -b "$f" | grep -q 'universal'; then
-                echo "still thin: ${f#"$home"/}"
-                thin=$((thin + 1))
+                rel="${f#"$home"/}"
+                if grep -qxF "$rel" "$allowed"; then
+                  echo "thin by design (one build only): $rel"
+                  expected=$((expected + 1))
+                else
+                  echo "UNEXPECTED thin binary: $rel"
+                  thin=$((thin + 1))
+                fi
               fi
             done < <(find "$home" -type f)
-            echo "single-architecture Mach-O files remaining: $thin"
+            echo "deliberately single-architecture: $expected"
+            echo "unexpected single-architecture:   $thin"
             [[ $thin -eq 0 ]] || fail=1
 
             lipo -info "$home/bin/java"
@@ -173,8 +188,8 @@ jobs:
             fi
           }
 
-          check_image "universal JDK image" "universal/$bundle/Contents/Home"
-          check_image "universal jlink runtime" "rt-universal"
+          check_image "universal JDK image" "universal/$bundle/Contents/Home" "$PWD/thin-allowed-jdk.txt"
+          check_image "universal jlink runtime" "rt-universal" "$PWD/thin-allowed-rt.txt"
 
           # The runtime is what ships, so make sure it actually executes code.
           cat > Hello.java <<'EOF'
