@@ -62,18 +62,37 @@ note_arch_exclusive() {   # $1 = path relative to the image root
 # separate builds. Compare what is inside them instead of their bytes, so a
 # genuine content difference is still caught.
 
-# name + CRC + size of every entry, order-independent. CRC makes this a real
-# content comparison rather than a metadata one.
-zip_inventory() {
-    python3 - "$1" <<'PY'
+# Entries whose content differs between the two zips, by CRC and size and
+# ignoring order. CRC makes this a real content comparison, not a metadata one.
+zip_diff() {
+    python3 - "$1" "$2" <<'PY'
 import sys, zipfile
-with zipfile.ZipFile(sys.argv[1]) as z:
-    for e in sorted(z.infolist(), key=lambda e: e.filename):
-        print(e.filename, e.CRC, e.file_size)
+def inv(p):
+    with zipfile.ZipFile(p) as z:
+        return {e.filename: (e.CRC, e.file_size) for e in z.infolist()}
+a, b = inv(sys.argv[1]), inv(sys.argv[2])
+for name in sorted(set(a) | set(b)):
+    if a.get(name) != b.get(name):
+        print(name)
 PY
 }
 
-# Entries inside the jimage that are inherently per-architecture. A universal
+zip_equal() {
+    local diffs unexpected
+    diffs="$(zip_diff "$1" "$2")"
+    [[ -z "$diffs" ]] && return 0
+    unexpected="$(grep -vE "$ARCH_SPECIFIC_ENTRIES" <<< "$diffs" || true)"
+    if [[ -z "$unexpected" ]]; then
+        echo "  $(basename "$1"): differs only in known per-architecture entries:"
+        sed 's|^|    differs: |' <<< "$diffs"
+        return 0
+    fi
+    echo "  $(basename "$1"): differs outside the known per-architecture set:" >&2
+    head -20 <<< "$unexpected" | sed 's|^|    differs: |' >&2
+    return 1
+}
+
+# Entries that are inherently per-architecture. A universal
 # image can hold only one lib/modules, so the aarch64 copy is kept and these
 # entries describe aarch64 while the x86_64 slice executes. Each was checked
 # against the JDK 25 sources before being listed here:
@@ -98,7 +117,10 @@ PY
 #                          fat copy afterwards. The workflow publishes one.
 #
 # Anything differing outside this set is a real content difference and fails.
-JIMAGE_ARCH_SPECIFIC='(^|/)module-info\.class$|/jdk/internal/util/(Architecture|PlatformProps)\.class$|/jdk/internal/module/SystemModules\$[^/]*\.class$|/sa\.properties$|/jpackageapplauncher$'
+# src.zip carries the generated *sources* of the same per-architecture classes
+# (PlatformProps.java is generated from PlatformProps.java.template), so the
+# same set applies to zips and to the jimage alike.
+ARCH_SPECIFIC_ENTRIES='(^|/)module-info\.class$|/jdk/internal/util/(Architecture|PlatformProps)\.(class|java)$|/jdk/internal/module/SystemModules\$[^/]*\.class$|/sa\.properties$|/jpackageapplauncher$'
 
 # For the jimage, extract both and compare the extracted trees. An inventory
 # would not be enough: the ModuleHashes attribute is fixed-length, so a
@@ -131,7 +153,7 @@ jimage_equal() {
         return 0
     fi
     local unexpected
-    unexpected="$(grep -vE "$JIMAGE_ARCH_SPECIFIC" <<< "$diffs" || true)"
+    unexpected="$(grep -vE "$ARCH_SPECIFIC_ENTRIES" <<< "$diffs" || true)"
     if [[ -z "$unexpected" ]]; then
         echo "  $(basename "$a"): differs only in known per-architecture entries:"
         sed 's/^/    /' <<< "$diffs"
@@ -146,7 +168,7 @@ jimage_equal() {
 
 container_equal() {
     case "$(basename "$1")" in
-        *.zip|*.jar|*.sym) [[ "$(zip_inventory "$1")" == "$(zip_inventory "$2")" ]] ;;
+        *.zip|*.jar|*.sym) zip_equal "$1" "$2" ;;
         modules)           jimage_equal "$1" "$2" ;;
         *)                 return 1 ;;
     esac
