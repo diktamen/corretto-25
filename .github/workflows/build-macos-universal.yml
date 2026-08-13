@@ -141,6 +141,38 @@ jobs:
             "$PWD/rt-x64" "$PWD/rt-aarch64" "$PWD/rt-universal"
 
       ###
+      ### 2b. the app launcher jpackage stamps into a .app
+      ###
+
+      - name: 'Build a fat jpackageapplauncher'
+        run: |
+          set -euo pipefail
+          # jpackage takes this launcher from its OWN runtime (the JDK running
+          # jpackage), not from --runtime-image, and copies it into the app as
+          # Contents/MacOS/<AppName>. It lives inside lib/modules as a module
+          # resource, so no file-level lipo can reach it and the merged JDK image
+          # necessarily carries only the aarch64 one. Extract both and publish a
+          # fat copy for create_mac_installer.sh to drop into the built .app --
+          # otherwise the app itself will not start on Intel, however universal
+          # its bundled runtime is.
+          res='jdk.jpackage/jdk/jpackage/internal/resources/jpackageapplauncher'
+          jimage="${{ steps.extract.outputs.arm-home }}/bin/jimage"
+          for arch in x64 aarch64; do
+            home="${{ steps.extract.outputs.x64-home }}"
+            [[ "$arch" == aarch64 ]] && home="${{ steps.extract.outputs.arm-home }}"
+            "$jimage" extract --dir "launcher-$arch" "$home/lib/modules"
+            if [[ ! -f "launcher-$arch/$res" ]]; then
+              echo "ERROR: $res not found in the $arch jimage" >&2
+              exit 1
+            fi
+          done
+          lipo -create "launcher-x64/$res" "launcher-aarch64/$res" \
+               -output jpackageapplauncher-universal
+          chmod 755 jpackageapplauncher-universal
+          lipo -info jpackageapplauncher-universal
+          file jpackageapplauncher-universal
+
+      ###
       ### 3. verification
       ###
 
@@ -216,6 +248,7 @@ jobs:
             -C universal "${{ steps.extract.outputs.bundle-dir }}"
           tar -czf "bundles/runtime-macos-universal${{ inputs.debug-suffix }}.tar.gz" \
             -C . rt-universal
+          cp jpackageapplauncher-universal bundles/
           ls -lh bundles
 
       - name: 'Upload the universal bundles'

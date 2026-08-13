@@ -73,16 +73,36 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 PY
 }
 
-# For the jimage, extract both and compare the extracted trees. An inventory
-# would not be enough: java.base's module-info can carry a ModuleHashes
-# attribute over the other modules, whose jmods hold per-architecture native
-# libraries. Those hashes are fixed-length, so a difference there does not
-# change any entry's size and would slip past a size-based check.
+# Entries inside the jimage that are inherently per-architecture. A universal
+# image can hold only one lib/modules, so the aarch64 copy is kept and these
+# entries describe aarch64 while the x86_64 slice executes. Each was checked
+# against the JDK 25 sources before being listed here:
 #
-# Differences confined to module-info.class are accepted: they are that hash
-# attribute, and it cannot hold for a universal image anyway, since every
-# binary in it has been rewritten by lipo. Anything else is a real difference
-# in class or resource content and fails.
+#   module-info.class      ModuleHashes over the other modules, whose jmods hold
+#                          per-architecture natives. Cannot hold for a universal
+#                          image regardless: lipo rewrote every binary in it.
+#   Architecture.class     Architecture.CURRENT is a build-time constant, so it
+#   PlatformProps.class    misreports on x86_64. Its only java.base consumers
+#                          (SegmentBulkOperations, StringSupport) ask solely
+#                          isLittleEndian(), identical on both macOS arches. Its
+#                          other consumers are jdk.incubator.vector, JVMCI and
+#                          jlink -- none on an application's runtime path. Note
+#                          os.arch is NOT affected: it comes from the VM, so
+#                          FFM's ABI choice (CABI reads StaticProperty.osArch)
+#                          stays correct on both slices.
+#   SystemModules$*.class  generated module graph; same module set either way.
+#   sa.properties          Serviceability Agent, debug tooling only.
+#   jpackageapplauncher    a native binary embedded as a module resource. This
+#                          one DOES matter: jpackage stamps it into the .app as
+#                          the launcher, so the app must have it replaced with a
+#                          fat copy afterwards. The workflow publishes one.
+#
+# Anything differing outside this set is a real content difference and fails.
+JIMAGE_ARCH_SPECIFIC='(^|/)module-info\.class$|/jdk/internal/util/(Architecture|PlatformProps)\.class$|/jdk/internal/module/SystemModules\$[^/]*\.class$|/sa\.properties$|/jpackageapplauncher$'
+
+# For the jimage, extract both and compare the extracted trees. An inventory
+# would not be enough: the ModuleHashes attribute is fixed-length, so a
+# difference there changes no entry's size and would slip past a size check.
 jimage_equal() {
     local a="$1" b="$2"
     local jimage="${JIMAGE:-$(command -v jimage 2>/dev/null || true)}"
@@ -94,21 +114,31 @@ jimage_equal() {
     "$jimage" extract --dir "$tmp/a" "$a" >/dev/null
     "$jimage" extract --dir "$tmp/b" "$b" >/dev/null
 
+    # find + cmp rather than 'diff -rq': diff quotes paths containing shell
+    # metacharacters, and SystemModules$*.class does contain one, so its output
+    # format is not something to pattern-match against.
     local diffs
-    diffs="$(cd "$tmp" && diff -rq a b 2>&1 \
-        | sed -E 's|^Files a/(.*) and b/.* differ$|differs: \1|; s|^Only in ([ab])/|only in \1: |' || true)"
+    ( cd "$tmp/a" && find . -type f | sort ) > "$tmp/list-a"
+    ( cd "$tmp/b" && find . -type f | sort ) > "$tmp/list-b"
+    diffs="$(
+        comm -3 "$tmp/list-a" "$tmp/list-b" | tr -d '\t' | sed 's|^\./|only in one: |'
+        while IFS= read -r f; do
+            cmp -s "$tmp/a/$f" "$tmp/b/$f" || printf 'differs: %s\n' "${f#./}"
+        done < <(comm -12 "$tmp/list-a" "$tmp/list-b")
+    )"
     if [[ -z "$diffs" ]]; then
         rm -rf "$tmp"
         return 0
     fi
     local unexpected
-    unexpected="$(grep -v 'module-info\.class' <<< "$diffs" || true)"
+    unexpected="$(grep -vE "$JIMAGE_ARCH_SPECIFIC" <<< "$diffs" || true)"
     if [[ -z "$unexpected" ]]; then
-        echo "  $(basename "$a"): only module-info.class differs (ModuleHashes); accepted"
+        echo "  $(basename "$a"): differs only in known per-architecture entries:"
+        sed 's/^/    /' <<< "$diffs"
         rm -rf "$tmp"
         return 0
     fi
-    echo "  $(basename "$a"): differs beyond module-info.class:" >&2
+    echo "  $(basename "$a"): differs outside the known per-architecture set:" >&2
     head -20 <<< "$unexpected" | sed 's/^/    /' >&2
     rm -rf "$tmp"
     return 1

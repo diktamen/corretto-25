@@ -184,7 +184,10 @@ jobs:
         run: |
           echo "hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           echo "version=$(cat version.txt | tr -d '[:space:]')" >> $GITHUB_OUTPUT
-          echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+          # Commit time, not wall clock: identical in every job of a run, so the
+          # two macOS builds produce byte-identical version resources and the
+          # universal merge is not defeated by two clocks.
+          echo "timestamp=$(git log -1 --format=%ct)" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: 'Configure'
