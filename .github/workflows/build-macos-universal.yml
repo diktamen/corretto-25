@@ -256,4 +256,4 @@ jobs:
         with:
           name: bundles-macos-universal${{ inputs.debug-suffix }}
           path: bundles
-          retention-days: 5
+          retention-days: 30
