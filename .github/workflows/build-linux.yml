@@ -78,7 +78,11 @@ permissions:
 jobs:
   build-linux:
     name: build
-    runs-on: ubuntu-24.04
+    # In-house: upstream builds on ubuntu-24.04, whose glibc 2.39 headers redirect
+    # strtol & co. to __isoc23_* symbols (GLIBC_2.38). Such a JDK does not start on
+    # AlmaLinux/RHEL 9 (glibc 2.34), which is what the Linux DiktaRec launcher
+    # ships on. 22.04 has glibc 2.35 and its builds need nothing past GLIBC_2.34.
+    runs-on: ubuntu-22.04
 
     strategy:
       fail-fast: false
