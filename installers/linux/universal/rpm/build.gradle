@@ -19,6 +19,8 @@
  * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+import org.redline_rpm.payload.Directive
+
 plugins {
     id 'com.netflix.nebula.ospackage' version 'latest.release'
 }
@@ -48,7 +50,7 @@ def jdkBinaryDir = "${buildRoot}/${project.correttoJdkArchiveName}"
 def jdkPackageName = "java-${project.version.major}-amazon-corretto-devel"
 
 ospackage {
-    version = project.version.upstream
+    version = project.version.full
     release = project.version.revision
 
     url = "${packageInfo.url}"
@@ -108,7 +110,7 @@ task generateJdkRpm(type: Rpm) {
     summary = "Amazon Corretto ${project.version.major} development environment"
     packageGroup = 'Development/Tools'
     // Remove after https://github.com/nebula-plugins/gradle-ospackage-plugin/issues/401 is merged and released
-    sourcePackage = "${jdkPackageName}-${project.version.major}.${project.version.minor}.${project.version.security}.${project.version.build}-${project.version.revision}.src.rpm"
+    sourcePackage = "${jdkPackageName}-${project.version.full}-${project.version.revision}.src.rpm"
 
     prefix(jdkHome)
     postInstall file("$buildRoot/scripts/postin_java.sh")
@@ -133,7 +135,7 @@ task generateJdkRpm(type: Rpm) {
 
     from(jdkBinaryDir) {
         include(project.configurationFiles)
-        fileType CONFIG | NOREPLACE
+        fileType new Directive(CONFIG.flag() | NOREPLACE.flag())
         into jdkHome
     }
 
