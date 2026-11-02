@@ -437,6 +437,7 @@ in the Amazon Corretto FAQ for supported platforms
 
 The following issues are addressed in 25.0.0.34.1:
 
+
 | Issue Name       | Platform | Description                                | Link                                                               |
 |------------------|----------|--------------------------------------------|--------------------------------------------------------------------|
 | Import jdk-25+34 | All      | Updates Corretto baseline to OpenJDK 25+34 | [jdk-25+34](https://github.com/openjdk/jdk/releases/tag/jdk-25+34) |
