@@ -346,7 +346,7 @@ jobs:
     uses: ./.github/workflows/build-macos.yml
     with:
       platform: macos-aarch64
-      runs-on: 'macos-15'
+      runs-on: 'tart'  # self-hosted ephemeral Tart VM (macOS 15, Xcode 16.4) on the builder Mac
       xcode-toolset-version: '16.4'
       configure-arguments: ${{ github.event.inputs.configure-arguments }}
       make-arguments: ${{ github.event.inputs.make-arguments }}
@@ -453,7 +453,7 @@ jobs:
     with:
       platform: macos-aarch64
       bootjdk-platform: macos-aarch64
-      runs-on: macos-15
+      runs-on: tart
       dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
       xcode-toolset-version: '16.4'
       debug-suffix: -debug

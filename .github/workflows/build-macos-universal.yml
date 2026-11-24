@@ -44,7 +44,7 @@ jobs:
   build-macos-universal:
     name: build
     # Must be macOS: lipo, and the checks below run the merged binaries.
-    runs-on: macos-15
+    runs-on: tart  # self-hosted ephemeral Tart VM on the builder Mac (x86_64 run check uses Rosetta if present)
     if: ${{ inputs.dry-run == false }}
 
     steps:
